@@ -1,0 +1,402 @@
+
+
+<!DOCTYPE html>
+<!--[if IE 8]><html class="no-js lt-ie9" lang="en" > <![endif]-->
+<!--[if gt IE 8]><!--> <html class="no-js" lang="en" > <!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <title>Transitioning from v1 to v2 &mdash; adapter-transformers  documentation</title>
+  
+
+  
+  
+    <link rel="shortcut icon" href="_static/favicon.png"/>
+  
+  
+  
+
+  
+  <script type="text/javascript" src="_static/js/modernizr.min.js"></script>
+  
+    
+      <script type="text/javascript" id="documentation_options" data-url_root="./" src="_static/documentation_options.js"></script>
+        <script src="_static/jquery.js"></script>
+        <script src="_static/underscore.js"></script>
+        <script src="_static/doctools.js"></script>
+        <script src="_static/language_data.js"></script>
+        <script src="_static/clipboard.min.js"></script>
+        <script src="_static/copybutton.js"></script>
+    
+    <script type="text/javascript" src="_static/js/theme.js"></script>
+
+    
+
+  
+  <link rel="stylesheet" href="_static/css/theme.css" type="text/css" />
+  <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+  <link rel="stylesheet" href="_static/copybutton.css" type="text/css" />
+  <link rel="stylesheet" href="_static/custom.css" type="text/css" />
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Loading Pre-Trained Adapters" href="loading.html" />
+    <link rel="prev" title="Extending the Library" href="extending.html" /> 
+</head>
+
+<body class="wy-body-for-nav">
+
+   
+  <div class="wy-grid-for-nav">
+    
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+          
+
+          
+            <a href="index.html" class="icon icon-home"> adapter-transformers
+          
+
+          
+            
+            <img src="_static/logo.png" class="logo" alt="Logo"/>
+          
+          </a>
+
+          
+            
+            
+          
+
+          
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+
+          
+        </div>
+
+        <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="main navigation">
+          
+            
+            
+              
+            
+            
+              <p class="caption"><span class="caption-text">adapter-transformers</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="adapters.html">Introduction to Adapters</a></li>
+<li class="toctree-l1"><a class="reference internal" href="adapter_composition.html">Adapter Activation and Composition</a></li>
+<li class="toctree-l1"><a class="reference internal" href="training.html">Adapter Training</a></li>
+<li class="toctree-l1"><a class="reference internal" href="prediction_heads.html">Prediction Heads</a></li>
+<li class="toctree-l1"><a class="reference internal" href="embeddings.html">Embeddings</a></li>
+<li class="toctree-l1"><a class="reference internal" href="extending.html">Extending the Library</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Transitioning from v1 to v2</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#what-s-new">What’s new</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#adapter-composition-blocks">Adapter composition blocks</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#new-model-support-adapters-for-bart-and-gpt-2">New model support: Adapters for BART and GPT-2</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#adapterdrop">AdapterDrop</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#transformers-upgrade">Transformers upgrade</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#what-has-changed">What has changed</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#unified-handling-of-all-adapter-types">Unified handling of all adapter types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#changes-to-adapter-names-parameter-in-model-forward">Changes to <code class="docutils literal notranslate"><span class="pre">adapter_names</span></code> parameter in model forward()</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#internal-changes">Internal changes</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#changes-to-adapter-weights-dictionaries-and-config">Changes to adapter weights dictionaries and config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#refactorings-in-adapter-implementations">Refactorings in adapter implementations</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p class="caption"><span class="caption-text">Adapter-Hub</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="loading.html">Loading Pre-Trained Adapters</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing to AdapterHub</a></li>
+<li class="toctree-l1"><a class="reference internal" href="huggingface_hub.html">Integration with HuggingFace’s Model Hub</a></li>
+</ul>
+<p class="caption"><span class="caption-text">Adapter-Related Classes</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="classes/adapter_config.html">Adapter Configuration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="classes/model_adapters_config.html">Model Adapters Config</a></li>
+<li class="toctree-l1"><a class="reference internal" href="classes/adapter_modules.html">Adapter Modules</a></li>
+<li class="toctree-l1"><a class="reference internal" href="classes/adapter_layer.html">AdapterLayerBaseMixin</a></li>
+<li class="toctree-l1"><a class="reference internal" href="classes/model_mixins.html">Model Mixins</a></li>
+<li class="toctree-l1"><a class="reference internal" href="classes/adapter_utils.html">Adapter Utilities</a></li>
+<li class="toctree-l1"><a class="reference internal" href="classes/weights_loaders.html">Weights Loaders</a></li>
+</ul>
+<p class="caption"><span class="caption-text">Supported Models</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="classes/models/bart.html">BART</a></li>
+<li class="toctree-l1"><a class="reference internal" href="classes/models/bert.html">BERT</a></li>
+<li class="toctree-l1"><a class="reference internal" href="classes/models/distilbert.html">DistilBERT</a></li>
+<li class="toctree-l1"><a class="reference internal" href="classes/models/encoderdecoder.html">Encoder Decoder Models</a></li>
+<li class="toctree-l1"><a class="reference internal" href="classes/models/gpt2.html">OpenAI GPT2</a></li>
+<li class="toctree-l1"><a class="reference internal" href="classes/models/mbart.html">MBart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="classes/models/roberta.html">RoBERTa</a></li>
+<li class="toctree-l1"><a class="reference internal" href="classes/models/t5.html">T5</a></li>
+<li class="toctree-l1"><a class="reference internal" href="classes/models/xlmroberta.html">XLM-RoBERTa</a></li>
+</ul>
+
+            
+          
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+
+      
+      <nav class="wy-nav-top" aria-label="top navigation">
+        
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">adapter-transformers</a>
+        
+      </nav>
+
+
+      <div class="wy-nav-content">
+        
+        <div class="rst-content">
+        
+          
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div role="navigation" aria-label="breadcrumbs navigation">
+
+  <ul class="wy-breadcrumbs">
+    
+      <li><a href="index.html">Docs</a> &raquo;</li>
+        
+      <li>Transitioning from v1 to v2</li>
+    
+    
+      <li class="wy-breadcrumbs-aside">
+        
+            
+            <a href="_sources/v2_transition.md.txt" rel="nofollow"> View page source</a>
+          
+        
+      </li>
+    
+  </ul>
+
+  
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+            
+  <div class="section" id="transitioning-from-v1-to-v2">
+<h1>Transitioning from v1 to v2<a class="headerlink" href="#transitioning-from-v1-to-v2" title="Permalink to this headline">¶</a></h1>
+<p>Version 2 of <code class="docutils literal notranslate"><span class="pre">adapter-transformers</span></code> brings a lot of new features and changes to the library.
+This document gives an overview on what’s new and which library changes to look out for when upgrading from v1 to v2.
+Sections with potentially breaking changes are marked with “⚠️”.</p>
+<div class="section" id="what-s-new">
+<h2>What’s new<a class="headerlink" href="#what-s-new" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="adapter-composition-blocks">
+<h3>Adapter composition blocks<a class="headerlink" href="#adapter-composition-blocks" title="Permalink to this headline">¶</a></h3>
+<p>The new version introduces a radically different way to define adapter setups in a Transformer model,
+allowing much more advanced and flexible adapter composition possibilities.
+An example setup using this new, modular composition mechanism might look like this:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span> <span class="nn">transformers.adapters.composition</span> <span class="k">as</span> <span class="nn">ac</span>
+
+<span class="n">model</span><span class="o">.</span><span class="n">active_adapters</span> <span class="o">=</span> <span class="n">ac</span><span class="o">.</span><span class="n">Stack</span><span class="p">(</span><span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="n">ac</span><span class="o">.</span><span class="n">Split</span><span class="p">(</span><span class="s2">&quot;b&quot;</span><span class="p">,</span> <span class="s2">&quot;c&quot;</span><span class="p">,</span> <span class="n">split_index</span><span class="o">=</span><span class="mi">60</span><span class="p">))</span>
+</pre></div>
+</div>
+<p>As we can see, the basic building blocks of this setup are simple objects representing different possibilities to combine individual adapters.
+In the above example, <code class="docutils literal notranslate"><span class="pre">Stack</span></code> describes stacking adapters layers on top of each other,
+e.g., as it is used in the <em>MAD-X</em> framework for cross-lingual transfer.
+<code class="docutils literal notranslate"><span class="pre">Split</span></code> results in splitting the input sequences between two adapters at a specified <code class="docutils literal notranslate"><span class="pre">split_index</span></code>.
+In the depicted setup, at every transformer layer the token representations are first passed through adapter <code class="docutils literal notranslate"><span class="pre">a</span></code> before being split at the <code class="docutils literal notranslate"><span class="pre">split_index</span></code> and passed through adapters <code class="docutils literal notranslate"><span class="pre">b</span></code> and <code class="docutils literal notranslate"><span class="pre">c</span></code> respectively.</p>
+<p>Besides the two blocks shown, <code class="docutils literal notranslate"><span class="pre">adapter-transformers</span></code> includes a <code class="docutils literal notranslate"><span class="pre">Fuse</span></code> block (for <a class="reference external" href="https://arxiv.org/pdf/2005.00247.pdf"><em>AdapterFusion</em></a>) and a <code class="docutils literal notranslate"><span class="pre">Parallel</span></code> block (see below).
+All of these blocks are derived from <code class="docutils literal notranslate"><span class="pre">AdapterCompositionBlock</span></code>, and they can be flexibly combined in even very complex scenarios.
+For more information on specifying the active adapters using <code class="docutils literal notranslate"><span class="pre">active_adapters</span></code> and the new composition blocks,
+refer to the <a class="reference internal" href="adapter_composition.html"><span class="doc">corresponding section in our documentation</span></a>.</p>
+</div>
+<div class="section" id="new-model-support-adapters-for-bart-and-gpt-2">
+<h3>New model support: Adapters for BART and GPT-2<a class="headerlink" href="#new-model-support-adapters-for-bart-and-gpt-2" title="Permalink to this headline">¶</a></h3>
+<p>Version 2 adds support for BART and GPT-2, marking a new type of models we support in the framework, namely sequence-to-sequence models (more to come!)</p>
+<p>We have <a class="reference external" href="https://adapterhub.ml/blog/2021/04/adapters-for-generative-and-seq2seq-models-in-nlp/">a separate blog post</a> that studies the effectiveness of adapters within these two models in greater detail. This blog post also includes a hands-on example where we train GPT-2 to generate poetry.</p>
+</div>
+<div class="section" id="adapterdrop">
+<h3>AdapterDrop<a class="headerlink" href="#adapterdrop" title="Permalink to this headline">¶</a></h3>
+<p>Version 2 of <code class="docutils literal notranslate"><span class="pre">adapter-transformers</span></code> integrates some of the key ideas presented in <em>AdapterDrop</em> <a class="reference external" href="https://arxiv.org/pdf/2010.11918.pdf">(Rücklé et al., 2020)</a>, namely, (1) parallel multi-task inference and (2) <em>robust</em> AdapterDrop training.</p>
+<p>Parallel multi-task inference, for any given input, runs multiple task adapters in parallel and thereby achieves considerable improvements in inference speed compared to sequentially running multiple Transformer models (see the paper for more details). The <code class="docutils literal notranslate"><span class="pre">Parallel</span></code> adapter composition block implements this behavior, which we describe in more detail <a class="reference external" href="adapter_composition.html#parallel">here</a>.</p>
+<p>A central advantage of multi-task inference is that it shares the computations in lower transformer layers across all inference tasks (before the first adapter block). Dropping out adapters from lower transformer layers can thus result in even faster inference speeds, but it often comes at the cost of lower accuracies. To allow for <em>dynamic</em> adjustment of the number of dropped adapter layers at run-time regarding the available computational resources, we introduce <em>robust</em> adapter training. This technique drops adapters from a random number of lower transformer layers in each training step. The resulting adapter can be adjusted at run-time regarding the number of dropped layers, to dynamically select between a higher accuracy or faster inference speeds.
+We present an example for robust <em>AdapterDrop</em> training <a class="reference external" href="https://github.com/Adapter-Hub/adapter-transformers/blob/master/notebooks/Adapter_Drop_Training.ipynb">in this Colab notebook</a>.</p>
+</div>
+<div class="section" id="transformers-upgrade">
+<h3>Transformers upgrade<a class="headerlink" href="#transformers-upgrade" title="Permalink to this headline">¶</a></h3>
+<p>Version 2.0.0 upgrades the underlying HuggingFace Transformers library from v3.5.1 to v4.5.1, bringing many awesome new features created by HuggingFace.</p>
+</div>
+</div>
+<div class="section" id="what-has-changed">
+<h2>What has changed<a class="headerlink" href="#what-has-changed" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="unified-handling-of-all-adapter-types">
+<h3>Unified handling of all adapter types<a class="headerlink" href="#unified-handling-of-all-adapter-types" title="Permalink to this headline">¶</a></h3>
+<p><em>Includes breaking changes ⚠️</em></p>
+<p>The new version removes the hard distinction between <em>task</em> and <em>language</em> adapters (realized using the <code class="docutils literal notranslate"><span class="pre">AdapterType</span></code> enumeration in v1) everywhere in the library.
+Instead, all adapters use the same set of methods.
+This results in some breaking changes.
+For example, you don’t have to specify the adapter type anymore when adding a new adapter.
+Instead of…</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># OLD (v1)</span>
+<span class="n">model</span><span class="o">.</span><span class="n">add_adapter</span><span class="p">(</span><span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="n">AdapterType</span><span class="o">.</span><span class="n">text_task</span><span class="p">,</span> <span class="n">config</span><span class="o">=</span><span class="s2">&quot;houlsby&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>… you would simply write…</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># NEW (v2)</span>
+<span class="n">model</span><span class="o">.</span><span class="n">add_adapter</span><span class="p">(</span><span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="n">config</span><span class="o">=</span><span class="s2">&quot;houlsby&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>A similar change applies for loading adapters from the Hub using <code class="docutils literal notranslate"><span class="pre">load_adapter()</span></code>.</p>
+<p>In v1, adapters of type <code class="docutils literal notranslate"><span class="pre">text_lang</span></code> automatically had invertible adapter modules added.
+As this type distinction is now removed, adding invertible adapters can be specified via the adapter config.
+For example…</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># OLD (v1)</span>
+<span class="n">model</span><span class="o">.</span><span class="n">add_adapter</span><span class="p">(</span><span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="n">AdapterType</span><span class="o">.</span><span class="n">text_task</span><span class="p">,</span> <span class="n">config</span><span class="o">=</span><span class="s2">&quot;pfeiffer&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>… in v1 would be equivalent to the following in v2:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># NEW (v2)</span>
+<span class="n">model</span><span class="o">.</span><span class="n">add_adapter</span><span class="p">(</span><span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="n">config</span><span class="o">=</span><span class="s2">&quot;pfeiffer+inv&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="changes-to-adapter-names-parameter-in-model-forward">
+<h3>Changes to <code class="docutils literal notranslate"><span class="pre">adapter_names</span></code> parameter in model forward()<a class="headerlink" href="#changes-to-adapter-names-parameter-in-model-forward" title="Permalink to this headline">¶</a></h3>
+<p><em>Includes breaking changes (only in v2.0.0, see note) ⚠️</em></p>
+<p>One possibility to specify the active adapters is to use the <code class="docutils literal notranslate"><span class="pre">adapter_names</span></code> parameter in each call to the model’s <code class="docutils literal notranslate"><span class="pre">forward()</span></code> method.
+With the integration of the new, unified mechanism for specifying adapter setups using composition blocks,
+it is now recommended to specify the active adapters via <code class="docutils literal notranslate"><span class="pre">set_active_adapters()</span></code> or the <code class="docutils literal notranslate"><span class="pre">active_adapters</span></code> property.
+For example…</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># OLD (v1)</span>
+<span class="n">model</span><span class="p">(</span><span class="o">**</span><span class="n">input_data</span><span class="p">,</span> <span class="n">adapter_names</span><span class="o">=</span><span class="s2">&quot;awesome_adapter&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>… would become…</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># NEW (v2)</span>
+<span class="n">model</span><span class="o">.</span><span class="n">active_adapters</span> <span class="o">=</span> <span class="s2">&quot;awesome_adapter&quot;</span>
+<span class="n">model</span><span class="p">(</span><span class="o">**</span><span class="n">input_data</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Version 2.0.0 temporarily removed the <code class="docutils literal notranslate"><span class="pre">adapter_names</span></code> parameter entirely.
+Due to user feedback regarding limitations of the <code class="docutils literal notranslate"><span class="pre">active_adapters</span></code> property in multi-threaded contexts,
+the <code class="docutils literal notranslate"><span class="pre">adapter_names</span></code> parameter was <strong>re-added in v2.0.1</strong>.
+See <a class="reference external" href="https://github.com/Adapter-Hub/adapter-transformers/issues/165">here for more</a>.</p>
+</div>
+</div>
+</div>
+<div class="section" id="internal-changes">
+<h2>Internal changes<a class="headerlink" href="#internal-changes" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="changes-to-adapter-weights-dictionaries-and-config">
+<h3>Changes to adapter weights dictionaries and config<a class="headerlink" href="#changes-to-adapter-weights-dictionaries-and-config" title="Permalink to this headline">¶</a></h3>
+<p><em>Includes breaking changes ⚠️</em></p>
+<p>With the unification of different adapter types and other internal refactorings, the names of the modules holding the adapters have changed.
+This affects the weights dictionaries exported by <code class="docutils literal notranslate"><span class="pre">save_adapter()</span></code>, making the adapters incompatible <em>in name</em>.
+Nonetheless, this does not visibly affect loading older adapters with the new version.
+When loading an adapter trained with v1 in a newer version, <code class="docutils literal notranslate"><span class="pre">adapter-transformers</span></code> will automatically convert the weights to the new format.
+However, loading adapters trained with newer versions into an earlier v1.x version of the library does not work.</p>
+<p>Additionally, there have been some changes in the saved configuration dictionary, also including automatic conversions from older versions.</p>
+</div>
+<div class="section" id="refactorings-in-adapter-implementations">
+<h3>Refactorings in adapter implementations<a class="headerlink" href="#refactorings-in-adapter-implementations" title="Permalink to this headline">¶</a></h3>
+<p>There have been some refactorings mainly in the adapter mixin implementations.
+Most importantly, all adapter-related code has been moved to the <code class="docutils literal notranslate"><span class="pre">transformers.adapters</span></code> namespace.
+Further details on the implementation can be found <a class="reference external" href="https://github.com/Adapter-Hub/adapter-transformers/blob/master/adding_adapters_to_a_model.md">in the guide for adding adapters to a new model</a>.</p>
+</div>
+</div>
+</div>
+
+
+           </div>
+           
+          </div>
+          <footer>
+  
+    <div class="rst-footer-buttons" role="navigation" aria-label="footer navigation">
+      
+        <a href="loading.html" class="btn btn-neutral float-right" title="Loading Pre-Trained Adapters" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right"></span></a>
+      
+      
+        <a href="extending.html" class="btn btn-neutral float-left" title="Extending the Library" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left"></span> Previous</a>
+      
+    </div>
+  
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>
+        &copy; Copyright 2020-2022, Adapter-Hub Team
+
+    </p>
+  </div>
+  Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a <a href="https://github.com/rtfd/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>. 
+
+</footer>
+
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+  <!--- IMPORTANT: This file has modifications compared to the snippet on the documentation page! -->
+<div class="rst-versions" data-toggle="rst-versions" role="note" aria-label="versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    <span class="fa fa-book"> Versions</span>
+    v: master
+    <span class="fa fa-caret-down"></span>
+  </span>
+  <div class="rst-other-versions">
+    <dl>
+      <dt>Tags</dt><dd><a href="./v1.1.1/index.html">v1.1.1</a></dd><dd><a href="./v2.3.0/index.html">v2.3.0</a></dd>
+    </dl>
+    <dl>
+      <dt>Branches</dt>
+      <dd><a href="v2_transition.html">master</a></dd>
+    </dl>
+  </div>
+</div>
+
+  <script type="text/javascript">
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script>
+
+  
+  
+    
+   
+
+</body>
+</html>
