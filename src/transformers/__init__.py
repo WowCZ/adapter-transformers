@@ -23,7 +23,7 @@
 # in the namespace without actually importing anything (and especially none of the backends).
 
 __adapters_version__ = "2.3.0"
-__version__ = "4.12.5"
+__version__ = "4.13.1"
 
 # Work around to update TensorFlow's absl.logging threshold which alters the
 # default Python logging output behavior when present.
@@ -1401,6 +1401,7 @@ if is_torch_available():
     _import_structure["adapters.trainer"] = [
         "AdapterTrainer",
         "Seq2SeqAdapterTrainer",
+        "Seq2SeqAdapterDiffTrainer",
     ]
     _import_structure["adapters.training"] = [
         "AdapterArguments",

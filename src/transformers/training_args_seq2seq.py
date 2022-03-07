@@ -61,3 +61,10 @@ class Seq2SeqTrainingArguments(TrainingArguments):
             "to the `num_beams` value of the model configuration."
         },
     )
+
+    differentiate_detect_step: Optional[int] = field(
+        default=1000,
+        metadata={
+            "help": "differentiation detect step"
+        },
+    )
