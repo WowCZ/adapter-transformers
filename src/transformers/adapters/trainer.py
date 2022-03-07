@@ -816,6 +816,12 @@ class AdapterDiffTrainer(Trainer):
                     # print('>>>> Switch at step', step)
                     self.current_task = inputs['tasks'][0]
                     self._switch_model_task_mode(self.current_task)
+                
+                inputs = {
+                    'input_ids': inputs['input_ids'].cuda(),
+                    'attention_mask': inputs['attention_mask'].cuda(),
+                    'labels': inputs['labels'].cuda(),
+                }
 
                 # Skip past any already trained steps if resuming training
                 if steps_trained_in_current_epoch > 0:
