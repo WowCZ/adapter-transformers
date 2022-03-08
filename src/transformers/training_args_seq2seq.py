@@ -68,3 +68,10 @@ class Seq2SeqTrainingArguments(TrainingArguments):
             "help": "differentiation detect step"
         },
     )
+
+    max_interference_degree: Optional[float] = field(
+        default=0,
+        metadata={
+            "help": "differentiation detect step"
+        },
+    )

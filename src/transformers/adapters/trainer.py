@@ -451,7 +451,7 @@ class AdapterDiffTrainer(Trainer):
                     tasks, interference_degrees = _calculate_interference_degree(task_grad_mapping)
                     max_interference_degree = torch.max(interference_degrees)
                     task_len = len(tasks)
-                    if max_interference_degree > 0:
+                    if max_interference_degree > self.args.max_interference_degree:
                         if layer not in differentiated_cell_mapping:
                             differentiated_cell_mapping[adapter_name] = {}
                         # start to differentiate
