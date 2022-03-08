@@ -72,6 +72,20 @@ class Seq2SeqTrainingArguments(TrainingArguments):
     max_interference_degree: Optional[float] = field(
         default=0,
         metadata={
-            "help": "differentiation detect step"
+            "help": "max interference degree"
+        },
+    )
+
+    differentiate_start_step: Optional[int] = field(
+        default=0,
+        metadata={
+            "help": "differentiation starting step"
+        },
+    )
+
+    differentiate_rate_threshold: Optional[float] = field(
+        default=5,
+        metadata={
+            "help": "differentiate rate threshold"
         },
     )

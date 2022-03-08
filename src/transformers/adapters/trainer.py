@@ -305,6 +305,7 @@ class AdapterDiffTrainer(Trainer):
                 dict([(name, f'{diff_tasks}-L{str(i)}') for name in task_names])
             self.current_active_adapters[f'L{str(i)}'] = f'{diff_tasks}-L{str(i)}'
         self.diff_task_names = task_names
+        self.diff_operation = True
 
     def create_optimizer(self):
         """
@@ -552,6 +553,17 @@ class AdapterDiffTrainer(Trainer):
         
         diff_cells = self._find_differentiatable_cell()
         self._update_differentiated_model(diff_cells)
+
+    def _calculate_differentiated_rate(self):
+        initial_adapter_num = len(self.laryerwise_candidate_adapter)
+        current_adapter_names = []
+        for layer in self.laryerwise_candidate_adapter.keys():
+            for task_name in self.laryerwise_candidate_adapter[layer].keys():
+                current_adapter_names.append(self.laryerwise_candidate_adapter[layer][task_name])
+        
+        current_adapter_num = len(list(set(current_adapter_names)))
+
+        return current_adapter_num / initial_adapter_num
 
     def train(
         self,
@@ -810,6 +822,7 @@ class AdapterDiffTrainer(Trainer):
 
             self.current_task = self.diff_task_names[0]
             differentiate_detect_step = args.differentiate_detect_step
+            differentiate_start_step = args.differentiate_start_step
 
             for step, inputs in enumerate(epoch_iterator):
                 if inputs['tasks'][0] != self.current_task:
@@ -909,9 +922,12 @@ class AdapterDiffTrainer(Trainer):
                     if optimizer_was_run and not self.deepspeed:
                         self.lr_scheduler.step()
 
-                    if (step + 1) % differentiate_detect_step == 0:
+                    if self.state.global_step > differentiate_start_step and (step + 1) % differentiate_detect_step == 0 and self.diff_operation:
                         self._differentiate_operate()
-                        self._switch_model_task_mode(self.current_task)
+                        current_diff_rate = self._calculate_differentiated_rate()
+                        if current_diff_rate >= self.args.differentiate_rate_threshold:
+                             self.diff_operation = False
+                    self._switch_model_task_mode(self.current_task)
 
                     model.zero_grad()
                     self.state.global_step += 1
