@@ -307,6 +307,40 @@ class AdapterDiffTrainer(Trainer):
         self.diff_task_names = task_names
         self.diff_operation = True
 
+        # Weighted sum learning
+        task_num = len(task_names)
+        self.huw_log_vars = [torch.zeros((1,)) for _ in range(task_num)]
+        if torch.cuda.is_available():
+            self.huw_log_vars = [p.cuda() for p in self.huw_log_vars]
+            for p in self.huw_log_vars:
+                p.requires_grad = True
+        self.huw_param_optim = torch.optim.Adam(self.huw_log_vars)
+        self.huw_pairs = dict(zip(task_names, self.huw_log_vars))
+
+    
+    def compute_loss(self, model, inputs, return_outputs=False):
+        if self.label_smoother is not None and "labels" in inputs:
+            # labels = inputs.pop("labels")
+            labels = inputs["labels"]
+        else:
+            labels = None
+        outputs = model(**inputs)
+
+        if labels is not None:
+            loss = self.label_smoother(outputs, labels)
+        else:
+            # We don't use .loss here since the model may return tuples instead of ModelOutput.
+            loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+
+        # huw_loss = 0
+        # for i, task in enumerate(tasks):
+        log_var = self.hu_pairs[self.current_task]
+        precision = torch.exp(-log_var)
+        huw_loss = torch.mean(precision * loss + log_var)
+
+        return (huw_loss, outputs) if return_outputs else huw_loss
+
+
     def create_optimizer(self):
         """
         Setup the optimizer.
@@ -390,6 +424,7 @@ class AdapterDiffTrainer(Trainer):
 
     def _switch_model_task_mode(self, target_task):
         # Switch the model on the target task mode
+        self.current_task = target_task
         adapter_names = []
         for layer, adapter_name in self.current_active_adapters.items():
             if adapter_name.startswith(f'{target_task}-') or f'-{target_task}-' in adapter_name:
@@ -827,8 +862,8 @@ class AdapterDiffTrainer(Trainer):
             for step, inputs in enumerate(epoch_iterator):
                 if inputs['tasks'][0] != self.current_task:
                     # print('>>>> Switch at step', step)
-                    self.current_task = inputs['tasks'][0]
-                    self._switch_model_task_mode(self.current_task)
+                    # self.current_task = inputs['tasks'][0]
+                    self._switch_model_task_mode(inputs['tasks'][0])
                 
                 inputs = {
                     'input_ids': inputs['input_ids'].cuda(),
@@ -918,6 +953,7 @@ class AdapterDiffTrainer(Trainer):
                         optimizer_was_run = scale_before <= scale_after
                     else:
                         self.optimizer.step()
+                        self.huw_param_optim.step()
 
                     if optimizer_was_run and not self.deepspeed:
                         self.lr_scheduler.step()
