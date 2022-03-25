@@ -334,7 +334,7 @@ class AdapterDiffTrainer(Trainer):
 
         # huw_loss = 0
         # for i, task in enumerate(tasks):
-        log_var = self.hu_pairs[self.current_task]
+        log_var = self.huw_pairs[self.current_task]
         precision = torch.exp(-log_var)
         huw_loss = torch.mean(precision * loss + log_var)
 
