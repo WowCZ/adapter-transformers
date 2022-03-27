@@ -340,15 +340,7 @@ class AdapterDiffTrainer(Trainer):
 
         return (huw_loss, outputs) if return_outputs else huw_loss
 
-
-    def create_optimizer(self):
-        """
-        Setup the optimizer.
-
-        We provide a reasonable default that works well. If you want to use something else, you can pass a tuple in the
-        Trainer's init through :obj:`optimizers`, or subclass and override this method in a subclass.
-        """
-        # if self.optimizer is None:
+    def update_optimizer_params_groups(self):
         decay_parameters = get_parameter_names(self.model, [nn.LayerNorm])
         decay_parameters = [name for name in decay_parameters if "bias" not in name]
         if hasattr(self.model, "config") and hasattr(self.model.config, "adapters"):
@@ -365,27 +357,57 @@ class AdapterDiffTrainer(Trainer):
                 "weight_decay": 0.0,
             },
         ]
-        if self.args.adafactor:
-            optimizer_cls = Adafactor
-            optimizer_kwargs = {"scale_parameter": False, "relative_step": False}
-        else:
-            optimizer_cls = AdamW
-            optimizer_kwargs = {
-                "betas": (self.args.adam_beta1, self.args.adam_beta2),
-                "eps": self.args.adam_epsilon,
-            }
-        optimizer_kwargs["lr"] = self.args.learning_rate
-        if self.sharded_ddp == ShardedDDPOption.SIMPLE:
-            self.optimizer = OSS(
-                params=optimizer_grouped_parameters,
-                optim=optimizer_cls,
-                **optimizer_kwargs,
-            )
-        else:
-            self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
 
-        if is_sagemaker_mp_enabled():
-            self.optimizer = smp.DistributedOptimizer(self.optimizer)
+        self.optimizer.param_groups = []
+
+        for param_group in optimizer_grouped_parameters:
+            self.optimizer.add_param_group(param_group)
+
+    # def create_optimizer(self):
+    #     """
+    #     Setup the optimizer.
+
+    #     We provide a reasonable default that works well. If you want to use something else, you can pass a tuple in the
+    #     Trainer's init through :obj:`optimizers`, or subclass and override this method in a subclass.
+    #     """
+    #     # if self.optimizer is None:
+    #     decay_parameters = get_parameter_names(self.model, [nn.LayerNorm])
+    #     decay_parameters = [name for name in decay_parameters if "bias" not in name]
+    #     if hasattr(self.model, "config") and hasattr(self.model.config, "adapters"):
+    #         match_str = r"adapter_fusion_layer\..*\.value"
+    #         decay_parameters = [name for name in decay_parameters if not re.match(match_str, name)]
+        
+    #     optimizer_grouped_parameters = [
+    #         {
+    #             "params": [p for n, p in self.model.named_parameters() if n in decay_parameters],
+    #             "weight_decay": self.args.weight_decay,
+    #         },
+    #         {
+    #             "params": [p for n, p in self.model.named_parameters() if n not in decay_parameters],
+    #             "weight_decay": 0.0,
+    #         },
+    #     ]
+    #     if self.args.adafactor:
+    #         optimizer_cls = Adafactor
+    #         optimizer_kwargs = {"scale_parameter": False, "relative_step": False}
+    #     else:
+    #         optimizer_cls = AdamW
+    #         optimizer_kwargs = {
+    #             "betas": (self.args.adam_beta1, self.args.adam_beta2),
+    #             "eps": self.args.adam_epsilon,
+    #         }
+    #     optimizer_kwargs["lr"] = self.args.learning_rate
+    #     if self.sharded_ddp == ShardedDDPOption.SIMPLE:
+    #         self.optimizer = OSS(
+    #             params=optimizer_grouped_parameters,
+    #             optim=optimizer_cls,
+    #             **optimizer_kwargs,
+    #         )
+    #     else:
+    #         self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+
+    #     if is_sagemaker_mp_enabled():
+    #         self.optimizer = smp.DistributedOptimizer(self.optimizer)
 
     def _deactivate_adapter_runtime(self, adapter_name):
         save_path = os.path.join(self.adapter_cache_path, adapter_name)
@@ -440,7 +462,7 @@ class AdapterDiffTrainer(Trainer):
         
         # print('Switch to', target_task, adapter_names)
         self.model.train_adapter(adapter_names)
-        self.create_optimizer()
+        self.update_optimizer_params_groups()
         
         if torch.cuda.is_available():
             self.model = self.model.to(torch.device('cuda'))
