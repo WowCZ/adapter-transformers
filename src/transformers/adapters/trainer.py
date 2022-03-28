@@ -358,7 +358,8 @@ class AdapterDiffTrainer(Trainer):
             },
         ]
 
-        self.optimizer.param_groups = []
+        self.optimizer.param_groups.clear()
+        self.optimizer.state.clear()
 
         for param_group in optimizer_grouped_parameters:
             self.optimizer.add_param_group(param_group)
@@ -985,7 +986,7 @@ class AdapterDiffTrainer(Trainer):
                         current_diff_rate = self._calculate_differentiated_rate()
                         if current_diff_rate >= self.args.differentiate_rate_threshold:
                              self.diff_operation = False
-                    self._switch_model_task_mode(self.current_task)
+                        self._switch_model_task_mode(self.current_task)
 
                     model.zero_grad()
                     self.state.global_step += 1
