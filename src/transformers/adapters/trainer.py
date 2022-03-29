@@ -251,6 +251,8 @@ class AdapterDiffTrainer(Trainer):
         eval_dataset: Optional[Dataset] = None,
         heldout_eval_dataset: Optional[Dataset] = None,
         diff_tasks: Optional[str] = None,
+        adapter_fusion: Optional[bool] = None,
+        hwu_loss: Optional[bool] = None,
         adapter_cache_path: Optional[str] = None,
         tokenizer: Optional[PreTrainedTokenizerBase] = None,
         model_init: Callable[[], PreTrainedModel] = None,
@@ -275,6 +277,7 @@ class AdapterDiffTrainer(Trainer):
         self.train_dataset = train_dataset
         self.heldout_eval_dataset = heldout_eval_dataset
         self.adapter_cache_path = adapter_cache_path
+        self.hwu_loss = hwu_loss
 
         if adapter_names is not None:
             self.model.set_active_adapters(adapter_names)
@@ -290,6 +293,8 @@ class AdapterDiffTrainer(Trainer):
                 or isinstance(self.model.active_adapters, AdapterCompositionBlock)
                 and any([isinstance(child, Fuse) for child in self.model.active_adapters.children])
             )
+
+            self.train_adapter_fusion = (self.train_adapter_fusion or adapter_fusion)
         if model.active_adapters is None:
             raise ValueError(
                 "Expected a model with an active adapter setup."
@@ -307,15 +312,26 @@ class AdapterDiffTrainer(Trainer):
         self.diff_task_names = task_names
         self.diff_operation = True
 
+        # train adapter fusion with adapter differentiation
+        if self.train_adapter_fusion:
+            fusion_active = False
+            self.laryerwise_fusion_adapters = dict()
+            for i in range(self.layer_num):
+                self.laryerwise_fusion_adapters[f'L{str(i)}'] = [fusion_active, f'Fusion-L{str(i)}']
+        
+        print('#'*50)
+        print('>>> train_adapter_fusion', self.train_adapter_fusion)
+                
         # Weighted sum learning
-        task_num = len(task_names)
-        self.huw_log_vars = [torch.zeros((1,)) for _ in range(task_num)]
-        if torch.cuda.is_available():
-            self.huw_log_vars = [p.cuda() for p in self.huw_log_vars]
-            for p in self.huw_log_vars:
-                p.requires_grad = True
-        self.huw_param_optim = torch.optim.Adam(self.huw_log_vars)
-        self.huw_pairs = dict(zip(task_names, self.huw_log_vars))
+        if self.hwu_loss:
+            task_num = len(task_names)
+            self.huw_log_vars = [torch.zeros((1,)) for _ in range(task_num)]
+            if torch.cuda.is_available():
+                self.huw_log_vars = [p.cuda() for p in self.huw_log_vars]
+                for p in self.huw_log_vars:
+                    p.requires_grad = True
+            self.huw_param_optim = torch.optim.Adam(self.huw_log_vars)
+            self.huw_pairs = dict(zip(task_names, self.huw_log_vars))
 
     
     def compute_loss(self, model, inputs, return_outputs=False):
@@ -332,13 +348,13 @@ class AdapterDiffTrainer(Trainer):
             # We don't use .loss here since the model may return tuples instead of ModelOutput.
             loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
 
-        # huw_loss = 0
-        # for i, task in enumerate(tasks):
-        log_var = self.huw_pairs[self.current_task]
-        precision = torch.exp(-log_var)
-        huw_loss = torch.mean(precision * loss + log_var)
+        if self.hwu_loss:
+            log_var = self.huw_pairs[self.current_task]
+            precision = torch.exp(-log_var)
+            huw_loss = torch.mean(precision * loss + log_var)
+            loss = huw_loss
 
-        return (huw_loss, outputs) if return_outputs else huw_loss
+        return (loss, outputs) if return_outputs else loss
 
     def update_optimizer_params_groups(self):
         decay_parameters = get_parameter_names(self.model, [nn.LayerNorm])
@@ -346,69 +362,75 @@ class AdapterDiffTrainer(Trainer):
         if hasattr(self.model, "config") and hasattr(self.model.config, "adapters"):
             match_str = r"adapter_fusion_layer\..*\.value"
             decay_parameters = [name for name in decay_parameters if not re.match(match_str, name)]
+
+        add_decay_params = [p for n, p in self.model.named_parameters() if n in decay_parameters and p.requires_grad and n not in self.candidate_params]
+        add_not_decay_params = [p for n, p in self.model.named_parameters() if n not in decay_parameters and p.requires_grad and n not in self.candidate_params]
+
         
         optimizer_grouped_parameters = [
             {
-                "params": [p for n, p in self.model.named_parameters() if n in decay_parameters],
+                "params": add_decay_params,
                 "weight_decay": self.args.weight_decay,
             },
             {
-                "params": [p for n, p in self.model.named_parameters() if n not in decay_parameters],
+                "params": add_not_decay_params,
                 "weight_decay": 0.0,
             },
         ]
 
-        self.optimizer.param_groups.clear()
-        self.optimizer.state.clear()
+        # self.optimizer.param_groups.clear()
+        # self.optimizer.state.clear()
 
         for param_group in optimizer_grouped_parameters:
             self.optimizer.add_param_group(param_group)
 
-    # def create_optimizer(self):
-    #     """
-    #     Setup the optimizer.
+    def create_optimizer(self):
+        """
+        Setup the optimizer.
 
-    #     We provide a reasonable default that works well. If you want to use something else, you can pass a tuple in the
-    #     Trainer's init through :obj:`optimizers`, or subclass and override this method in a subclass.
-    #     """
-    #     # if self.optimizer is None:
-    #     decay_parameters = get_parameter_names(self.model, [nn.LayerNorm])
-    #     decay_parameters = [name for name in decay_parameters if "bias" not in name]
-    #     if hasattr(self.model, "config") and hasattr(self.model.config, "adapters"):
-    #         match_str = r"adapter_fusion_layer\..*\.value"
-    #         decay_parameters = [name for name in decay_parameters if not re.match(match_str, name)]
-        
-    #     optimizer_grouped_parameters = [
-    #         {
-    #             "params": [p for n, p in self.model.named_parameters() if n in decay_parameters],
-    #             "weight_decay": self.args.weight_decay,
-    #         },
-    #         {
-    #             "params": [p for n, p in self.model.named_parameters() if n not in decay_parameters],
-    #             "weight_decay": 0.0,
-    #         },
-    #     ]
-    #     if self.args.adafactor:
-    #         optimizer_cls = Adafactor
-    #         optimizer_kwargs = {"scale_parameter": False, "relative_step": False}
-    #     else:
-    #         optimizer_cls = AdamW
-    #         optimizer_kwargs = {
-    #             "betas": (self.args.adam_beta1, self.args.adam_beta2),
-    #             "eps": self.args.adam_epsilon,
-    #         }
-    #     optimizer_kwargs["lr"] = self.args.learning_rate
-    #     if self.sharded_ddp == ShardedDDPOption.SIMPLE:
-    #         self.optimizer = OSS(
-    #             params=optimizer_grouped_parameters,
-    #             optim=optimizer_cls,
-    #             **optimizer_kwargs,
-    #         )
-    #     else:
-    #         self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+        We provide a reasonable default that works well. If you want to use something else, you can pass a tuple in the
+        Trainer's init through :obj:`optimizers`, or subclass and override this method in a subclass.
+        """
+        if self.optimizer is None:
+            decay_parameters = get_parameter_names(self.model, [nn.LayerNorm])
+            decay_parameters = [name for name in decay_parameters if "bias" not in name]
+            if hasattr(self.model, "config") and hasattr(self.model.config, "adapters"):
+                match_str = r"adapter_fusion_layer\..*\.value"
+                decay_parameters = [name for name in decay_parameters if not re.match(match_str, name)]
 
-    #     if is_sagemaker_mp_enabled():
-    #         self.optimizer = smp.DistributedOptimizer(self.optimizer)
+            self.candidate_params = [n for n, p in self.model.named_parameters()]
+            
+            optimizer_grouped_parameters = [
+                {
+                    "params": [p for n, p in self.model.named_parameters() if n in decay_parameters and p.requires_grad],
+                    "weight_decay": self.args.weight_decay,
+                },
+                {
+                    "params": [p for n, p in self.model.named_parameters() if n not in decay_parameters and p.requires_grad],
+                    "weight_decay": 0.0,
+                },
+            ]
+            if self.args.adafactor:
+                optimizer_cls = Adafactor
+                optimizer_kwargs = {"scale_parameter": False, "relative_step": False}
+            else:
+                optimizer_cls = AdamW
+                optimizer_kwargs = {
+                    "betas": (self.args.adam_beta1, self.args.adam_beta2),
+                    "eps": self.args.adam_epsilon,
+                }
+            optimizer_kwargs["lr"] = self.args.learning_rate
+            if self.sharded_ddp == ShardedDDPOption.SIMPLE:
+                self.optimizer = OSS(
+                    params=optimizer_grouped_parameters,
+                    optim=optimizer_cls,
+                    **optimizer_kwargs,
+                )
+            else:
+                self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+
+            if is_sagemaker_mp_enabled():
+                self.optimizer = smp.DistributedOptimizer(self.optimizer)
 
     def _deactivate_adapter_runtime(self, adapter_name):
         save_path = os.path.join(self.adapter_cache_path, adapter_name)
@@ -417,11 +439,27 @@ class AdapterDiffTrainer(Trainer):
         self.model.save_adapter(save_path, adapter_name)
         self.model.delete_adapter(adapter_name)
 
+    def _deactivate_adapter_fusion_runtime(self, adapter_fusion_name):
+        save_path = os.path.join(self.adapter_cache_path, adapter_fusion_name)
+        if not os.path.exists(save_path):
+            os.mkdir(save_path)
+        self.model.save_adapter_fusion(save_path, adapter_fusion_name)
+        self.model.delete_adapter_fusion(adapter_fusion_name)
+
     def _activate_adapter_runtime(self, adapter_name):
         save_path = os.path.join(self.adapter_cache_path, adapter_name)
         if not os.path.exists(save_path):
             os.mkdir(save_path)
         self.model.load_adapter(save_path, load_as=adapter_name, set_active=True)
+
+    def _activate_adapter_fusion_runtime(self, adapter_fusion_name, new_adapter_fusion_name):
+        save_path = os.path.join(self.adapter_cache_path, adapter_fusion_name)
+        if not os.path.exists(save_path):
+            os.mkdir(save_path)
+        self.model.load_adapter_fusion(save_path, load_as=new_adapter_fusion_name, set_active=True)
+
+    def _create_adapter_fusion_runtime(self, adapter_fusion_name):
+        self.model.add_adapter_fusion(adapter_fusion_name, set_active=True)
 
     def _copy_adapter_runtime(self, target_adapter, source_adapter):
         save_path = os.path.join(self.adapter_cache_path, source_adapter)
@@ -437,7 +475,7 @@ class AdapterDiffTrainer(Trainer):
     def _extract_adapter_grads(self, task_name):
         # record all the adapter gradients on held-out evaluation data
         for name, param in self.model.named_parameters():
-            if 'adapter' in name and param.requires_grad:
+            if 'adapter' in name and f'{task_name}-' in name and ',' not in name and param.requires_grad:
                 layer = name.split('.')[6].split('-')[-1]
                 if layer not in self.exist_adapter_cell_grads:
                     self.exist_adapter_cell_grads[layer] = {}
@@ -448,25 +486,27 @@ class AdapterDiffTrainer(Trainer):
     def _switch_model_task_mode(self, target_task):
         # Switch the model on the target task mode
         self.current_task = target_task
-        adapter_names = []
-        for layer, adapter_name in self.current_active_adapters.items():
-            if adapter_name.startswith(f'{target_task}-') or f'-{target_task}-' in adapter_name:
-                adapter_names.append(adapter_name)
-                continue
-            else:
-                if len(adapter_name) > 0:
-                    self._deactivate_adapter_runtime(adapter_name)
-                target_adapter = self.laryerwise_candidate_adapter[layer][target_task]
-                adapter_names.append(target_adapter)
-                self._activate_adapter_runtime(target_adapter)
-                self.current_active_adapters[layer] = target_adapter
+
+        if not self.train_adapter_fusion:
+            adapter_names = []
+            for layer, adapter_name in self.current_active_adapters.items():
+                if adapter_name.startswith(f'{target_task}-') or f'-{target_task}-' in adapter_name:
+                    adapter_names.append(adapter_name)
+                    continue
+                else:
+                    if len(adapter_name) > 0:
+                        self._deactivate_adapter_runtime(adapter_name)
+                    target_adapter = self.laryerwise_candidate_adapter[layer][target_task]
+                    adapter_names.append(target_adapter)
+                    self._activate_adapter_runtime(target_adapter)
+                    self.current_active_adapters[layer] = target_adapter
+            
+            # print('Switch to', target_task, adapter_names)
+            self.model.train_adapter(adapter_names)
+            self.update_optimizer_params_groups()            
         
-        # print('Switch to', target_task, adapter_names)
-        self.model.train_adapter(adapter_names)
-        self.update_optimizer_params_groups()
-        
-        if torch.cuda.is_available():
-            self.model = self.model.to(torch.device('cuda'))
+            if torch.cuda.is_available():
+                self.model = self.model.to(torch.device('cuda'))
 
     def _find_differentiatable_cell(self):
         # find all the differentiatable cells according to the
@@ -585,6 +625,70 @@ class AdapterDiffTrainer(Trainer):
             for task in split_group[1]:
                 self.laryerwise_candidate_adapter[layer][task] = adapter_group2
 
+    def _update_differentiated_fusion_model(self, differentiated_cells):
+        # add new differentiated cells in the model and load 
+        # the corresponding params in the optimizer
+        for adapter_name, split_group in differentiated_cells.items():
+            layer = adapter_name.split('-')[-1]
+            adapter_group1 = '-'.join(split_group[0]) + f'-{layer}'
+            adapter_group2 = '-'.join(split_group[1]) + f'-{layer}'
+
+            layer_fusion_active = self.laryerwise_fusion_adapters[layer][0]
+
+            self._deactivate_adapter_runtime(adapter_name)
+            if layer_fusion_active:
+                self._deactivate_adapter_fusion_runtime(self.laryerwise_fusion_adapters[layer][1])
+            
+            self._copy_adapter_runtime(adapter_group1, adapter_name)
+            self._copy_adapter_runtime(adapter_group2, adapter_name)
+
+            for task in split_group[0]:
+                self.laryerwise_candidate_adapter[layer][task] = adapter_group1
+
+            for task in split_group[1]:
+                self.laryerwise_candidate_adapter[layer][task] = adapter_group2
+        
+
+        adapter_fusion_names = []
+        for adapter_name in differentiated_cells.keys():
+            layer = adapter_name.split('-')[-1]
+            layer_fusion_active = self.laryerwise_fusion_adapters[layer][0]
+
+            layer_adapters = list(set(list(self.laryerwise_candidate_adapter[layer].values())))
+            layer_fusion_name = ','.join(layer_adapters)
+            adapter_fusion_names.append(layer_adapters)
+            if not layer_fusion_active:
+                self._create_adapter_fusion_runtime(layer_fusion_name)
+                self.laryerwise_fusion_adapters[layer][0] = True
+            else:
+                self._activate_adapter_fusion_runtime(self.laryerwise_fusion_adapters[layer][1], layer_fusion_name)
+            
+            self.laryerwise_fusion_adapters[layer][1] = layer_fusion_name
+
+        undiff_adapters = []
+        for layer in self.laryerwise_fusion_adapters:
+            if not self.laryerwise_fusion_adapters[layer][0]:
+                undiff_adapter = self.laryerwise_candidate_adapter[layer][self.current_task]
+                undiff_adapters.append(undiff_adapter)
+
+
+        if len(adapter_fusion_names) > 0:
+            if len(undiff_adapters) > 0:
+                self.model.train_adapter_and_fusion(undiff_adapters, adapter_fusion_names, unfreeze_adapters=True)
+            else:
+                self.model.train_adapter_fusion(adapter_fusion_names, unfreeze_adapters=True)
+            # for name, param in self.model.named_parameters():
+            #     if ',' not in name and param.requires_grad:
+            #         print('>>>', name, param.data.size())
+            # exit(0)
+        else:
+            self.model.train_adapter(undiff_adapters)
+
+        self.update_optimizer_params_groups()
+
+        if torch.cuda.is_available():
+            self.model = self.model.to(torch.device('cuda'))
+
     def _differentiate_operate(self):
         self.exist_adapter_cell_grads = {}
 
@@ -610,7 +714,10 @@ class AdapterDiffTrainer(Trainer):
             self._extract_adapter_grads(current_task)
         
         diff_cells = self._find_differentiatable_cell()
-        self._update_differentiated_model(diff_cells)
+        if not self.train_adapter_fusion:
+            self._update_differentiated_model(diff_cells)
+        else:
+            self._update_differentiated_fusion_model(diff_cells)
 
     def _calculate_differentiated_rate(self):
         initial_adapter_num = len(self.laryerwise_candidate_adapter)
@@ -976,7 +1083,8 @@ class AdapterDiffTrainer(Trainer):
                         optimizer_was_run = scale_before <= scale_after
                     else:
                         self.optimizer.step()
-                        self.huw_param_optim.step()
+                        if self.hwu_loss:
+                            self.huw_param_optim.step()
 
                     if optimizer_was_run and not self.deepspeed:
                         self.lr_scheduler.step()
@@ -1093,22 +1201,39 @@ class AdapterDiffTrainer(Trainer):
         #     if hasattr(self.model, "heads"):
         #         self.model.save_all_heads(output_dir)
 
-        activate_adapters = []
-        for layer in self.laryerwise_candidate_adapter.keys():
-            for target_task in self.laryerwise_candidate_adapter[layer].keys():
-                activate_adapters.append(self.laryerwise_candidate_adapter[layer][target_task])
-        
-        activate_adapters = list(set(activate_adapters))
+        if not self.train_adapter_fusion:
+            activate_adapters = []
+            for layer in self.laryerwise_candidate_adapter.keys():
+                for target_task in self.laryerwise_candidate_adapter[layer].keys():
+                    activate_adapters.append(self.laryerwise_candidate_adapter[layer][target_task])
+            
+            activate_adapters = list(set(activate_adapters))
 
-        current_activate_adapters = list(self.current_active_adapters.values())
+            current_activate_adapters = list(self.current_active_adapters.values())
 
-        for adapter in activate_adapters:
-            if adapter in current_activate_adapters:
-                self.model.save_adapter(os.path.join(output_dir, adapter), adapter)
-            else:
-                adapter_path = f'{self.adapter_cache_path}/{adapter}'
-                os.system(f'cp -rf {adapter_path} {output_dir}')
-        
+            for adapter in activate_adapters:
+                if adapter in current_activate_adapters:
+                    self.model.save_adapter(os.path.join(output_dir, adapter), adapter)
+                else:
+                    adapter_path = f'{self.adapter_cache_path}/{adapter}'
+                    os.system(f'cp -rf {adapter_path} {output_dir}')
+        else:
+            activate_adapter_fusions = []
+            for layer in self.laryerwise_candidate_adapter.keys():
+                layer_activate_adapters = []
+                for target_task in self.laryerwise_candidate_adapter[layer].keys():
+                    layer_activate_adapters.append(self.laryerwise_candidate_adapter[layer][target_task])
+                if len(set(layer_activate_adapters)) == 1:
+                    adapter = layer_activate_adapters[0]
+                    self.model.save_adapter(os.path.join(output_dir, adapter), adapter)
+                else:
+                    adapter_fusion = self.laryerwise_fusion_adapters[layer][1]
+                    activate_adapter_fusions.append(adapter_fusion)
+                    self.model.save_adapter_fusion(os.path.join(output_dir, adapter_fusion), adapter_fusion)
+                    for adapter in adapter_fusion.split(','):
+                        self.model.save_adapter(os.path.join(output_dir, adapter), adapter)
+            json.dump(activate_adapter_fusions, open(os.path.join(output_dir, 'activate_adapter_fusions.json'), 'w'), indent=4)
+            
         json.dump(self.laryerwise_candidate_adapter, open(os.path.join(output_dir, 'adapter_structure.json'), 'w'), indent=4)
 
         if self.tokenizer is not None:
@@ -1234,9 +1359,9 @@ class AdapterTrainerCallback(TrainerCallback):
     def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
         # apply adapter fusion weight regularization on the value matrix
         model = kwargs.pop("model")
-        if self.trainer.train_adapter_fusion:
-            fusion_reg_loss = model.base_model.get_fusion_regularization_loss()
-            fusion_reg_loss.backward()
+        # if self.trainer.train_adapter_fusion:
+        #     fusion_reg_loss = model.base_model.get_fusion_regularization_loss()
+        #     fusion_reg_loss.backward()
 
 
 class Seq2SeqAdapterTrainer(AdapterTrainer, Seq2SeqTrainer):

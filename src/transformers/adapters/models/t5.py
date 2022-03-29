@@ -165,6 +165,25 @@ class T5ModelAdaptersMixin(ModelAdaptersMixin):
         # use the adapters to be trained by default in every forward pass
         self.set_active_adapters(adapter_setup)
 
+    def train_adapter_and_fusion(self, adapter_setup: Union[list, AdapterCompositionBlock], 
+                                       adapter_fusion_setup: Union[list, AdapterCompositionBlock], 
+                                       unfreeze_adapters=False):
+        """Sets the model into mode for training of adapter fusion determined by a list of adapter names."""
+        self.train()
+        self.freeze_model(True)
+        adapter_fusion_setup = parse_composition(adapter_fusion_setup)
+        if hasattr(self, "encoder"):
+            self.encoder.enable_adapters(adapter_fusion_setup, unfreeze_adapters, True)
+        self.decoder.enable_adapters(adapter_fusion_setup, unfreeze_adapters, True)
+        # use the adapters to be trained by default in every forward pass
+        self.set_active_adapters(adapter_fusion_setup)
+
+        adapter_setup = parse_composition(adapter_setup)
+        if hasattr(self, "encoder"):
+            self.encoder.enable_adapters(adapter_setup, True, False)
+            self.encoder.enable_invertible_adapters(adapter_setup.flatten())
+        self.decoder.enable_adapters(adapter_setup, True, False)
+
     def _add_adapter(self, adapter_name):
         if hasattr(self, "encoder"):
             self.encoder.add_adapter(adapter_name)
