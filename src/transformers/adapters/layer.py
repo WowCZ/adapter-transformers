@@ -114,6 +114,32 @@ class AdapterLayerBaseMixin(ABC):
                         for param in self.adapter_fusion_layer[sub_setup.name].parameters():
                             param.requires_grad = True
 
+    def enable_target_adapters(self, adapter_setup: AdapterCompositionBlock, unfreeze_adapters: bool, unfreeze_fusion: bool, target_task: str):
+        """
+        Unfreezes a given list of adapters, the adapter fusion layer, or both
+
+        Args:
+            adapter_names: names of adapters to unfreeze (or names of adapters part of the fusion layer to unfreeze)
+            unfreeze_adapters: whether the adapters themselves should be unfreezed
+            unfreeze_fusion: whether the adapter attention layer for the given adapters should be unfreezed
+        """
+        if unfreeze_adapters:
+            for adapter_name in adapter_setup.flatten():
+                if adapter_name in self.adapters and (f'-{target_task}-' in adapter_name or adapter_name.startswith(f'{target_task}-')):
+                    for param in self.adapters[adapter_name].parameters():
+                        param.requires_grad = True
+
+        if unfreeze_fusion:
+            if isinstance(adapter_setup, Fuse):
+                if adapter_setup.name in self.adapter_fusion_layer:
+                    for param in self.adapter_fusion_layer[adapter_setup.name].parameters():
+                        param.requires_grad = True
+            for sub_setup in adapter_setup:
+                if isinstance(sub_setup, Fuse):
+                    if sub_setup.name in self.adapter_fusion_layer:
+                        for param in self.adapter_fusion_layer[sub_setup.name].parameters():
+                            param.requires_grad = True
+
     def get_adapter_preparams(
         self,
         adapter_config,

@@ -62,6 +62,12 @@ class T5BlockAdaptersMixin:
     ):
         for layer in self.layer:
             layer.enable_adapters(adapter_setup, unfreeze_adapters, unfreeze_attention)
+    
+    def enable_target_adapters(
+        self, adapter_setup: AdapterCompositionBlock, unfreeze_adapters: bool, unfreeze_attention: bool, target_task: str
+    ):
+        for layer in self.layer:
+            layer.enable_target_adapters(adapter_setup, unfreeze_adapters, unfreeze_attention, target_task)
 
     def delete_adapter(self, adapter_name):
         for layer in self.layer:
@@ -102,6 +108,12 @@ class T5StackAdaptersMixin:
     ):
         for block in self.block:
             block.enable_adapters(adapter_setup, unfreeze_adapters, unfreeze_attention)
+
+    def enable_target_adapters(
+        self, adapter_setup: AdapterCompositionBlock, unfreeze_adapters: bool, unfreeze_attention: bool, target_task: str
+    ):
+        for block in self.block:
+            block.enable_target_adapters(adapter_setup, unfreeze_adapters, unfreeze_attention, target_task)
 
     def adjust_attention_mask_for_parallel(self, hidden_states, attention_mask):
         if attention_mask is not None and hidden_states.shape[0] != attention_mask.shape[0]:
@@ -167,22 +179,25 @@ class T5ModelAdaptersMixin(ModelAdaptersMixin):
 
     def train_adapter_and_fusion(self, adapter_setup: Union[list, AdapterCompositionBlock], 
                                        adapter_fusion_setup: Union[list, AdapterCompositionBlock], 
-                                       unfreeze_adapters=False):
+                                       unfreeze_adapters=False,
+                                       target_task: str=None):
         """Sets the model into mode for training of adapter fusion determined by a list of adapter names."""
         self.train()
         self.freeze_model(True)
         adapter_fusion_setup = parse_composition(adapter_fusion_setup)
         if hasattr(self, "encoder"):
-            self.encoder.enable_adapters(adapter_fusion_setup, unfreeze_adapters, True)
-        self.decoder.enable_adapters(adapter_fusion_setup, unfreeze_adapters, True)
+            self.encoder.enable_target_adapters(adapter_fusion_setup, unfreeze_adapters, True, target_task)
+        self.decoder.enable_target_adapters(adapter_fusion_setup, unfreeze_adapters, True, target_task)
         # use the adapters to be trained by default in every forward pass
         self.set_active_adapters(adapter_fusion_setup)
 
-        adapter_setup = parse_composition(adapter_setup)
-        if hasattr(self, "encoder"):
-            self.encoder.enable_adapters(adapter_setup, True, False)
-            self.encoder.enable_invertible_adapters(adapter_setup.flatten())
-        self.decoder.enable_adapters(adapter_setup, True, False)
+        if len(adapter_setup) > 0:
+            adapter_setup = parse_composition(adapter_setup)
+            if hasattr(self, "encoder"):
+                self.encoder.enable_adapters(adapter_setup, True, False)
+                self.encoder.enable_invertible_adapters(adapter_setup.flatten())
+            self.decoder.enable_adapters(adapter_setup, True, False)
+            self.set_active_adapters(adapter_setup)
 
     def _add_adapter(self, adapter_name):
         if hasattr(self, "encoder"):

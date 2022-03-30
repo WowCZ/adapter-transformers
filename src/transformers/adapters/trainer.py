@@ -452,10 +452,12 @@ class AdapterDiffTrainer(Trainer):
             os.mkdir(save_path)
         self.model.load_adapter(save_path, load_as=adapter_name, set_active=True)
 
-    def _activate_adapter_fusion_runtime(self, adapter_fusion_name, new_adapter_fusion_name):
+    def _copy_adapter_fusion_runtime(self, new_adapter_fusion_name, adapter_fusion_name):
         save_path = os.path.join(self.adapter_cache_path, adapter_fusion_name)
-        if not os.path.exists(save_path):
-            os.mkdir(save_path)
+        assert not os.path.exists(save_path)
+        # if not os.path.exists(save_path):
+        #     os.mkdir(save_path)
+        # self.model.save_adapter_fusion(save_path, adapter_fusion_name)
         self.model.load_adapter_fusion(save_path, load_as=new_adapter_fusion_name, set_active=True)
 
     def _create_adapter_fusion_runtime(self, adapter_fusion_name):
@@ -503,10 +505,31 @@ class AdapterDiffTrainer(Trainer):
             
             # print('Switch to', target_task, adapter_names)
             self.model.train_adapter(adapter_names)
-            self.update_optimizer_params_groups()            
-        
-            if torch.cuda.is_available():
-                self.model = self.model.to(torch.device('cuda'))
+        else:
+            adapter_fusion_names = []
+            undiff_adapters = []
+            for layer, fusion_state in self.laryerwise_fusion_adapters.items():
+                if fusion_state[0]:
+                    adapter_fusion_names.append(fusion_state[1].split(','))
+                else:
+                    undiff_adapter = self.laryerwise_candidate_adapter[layer][self.current_task]
+                    undiff_adapters.append(undiff_adapter)
+
+            if len(adapter_fusion_names) > 0:
+                self.model.train_adapter_and_fusion(undiff_adapters, adapter_fusion_names, unfreeze_adapters=True, target_task=target_task)
+                # print('#'*100)
+                # print('>>> TARGET TASK',target_task)
+                # for n, p in self.model.named_parameters():
+                #     if 'adapter' in n and 'fusion' not in n and p.requires_grad:
+                #         print('>>>', n, p.data.size())
+                # exit(0)
+            else:
+                self.model.train_adapter(undiff_adapters)
+
+        self.update_optimizer_params_groups()            
+    
+        if torch.cuda.is_available():
+            self.model = self.model.to(torch.device('cuda'))
 
     def _find_differentiatable_cell(self):
         # find all the differentiatable cells according to the
@@ -649,45 +672,20 @@ class AdapterDiffTrainer(Trainer):
                 self.laryerwise_candidate_adapter[layer][task] = adapter_group2
         
 
-        adapter_fusion_names = []
         for adapter_name in differentiated_cells.keys():
             layer = adapter_name.split('-')[-1]
             layer_fusion_active = self.laryerwise_fusion_adapters[layer][0]
 
             layer_adapters = list(set(list(self.laryerwise_candidate_adapter[layer].values())))
             layer_fusion_name = ','.join(layer_adapters)
-            adapter_fusion_names.append(layer_adapters)
             if not layer_fusion_active:
                 self._create_adapter_fusion_runtime(layer_fusion_name)
                 self.laryerwise_fusion_adapters[layer][0] = True
             else:
-                self._activate_adapter_fusion_runtime(self.laryerwise_fusion_adapters[layer][1], layer_fusion_name)
+                self._copy_adapter_fusion_runtime(layer_fusion_name, self.laryerwise_fusion_adapters[layer][1])
             
             self.laryerwise_fusion_adapters[layer][1] = layer_fusion_name
-
-        undiff_adapters = []
-        for layer in self.laryerwise_fusion_adapters:
-            if not self.laryerwise_fusion_adapters[layer][0]:
-                undiff_adapter = self.laryerwise_candidate_adapter[layer][self.current_task]
-                undiff_adapters.append(undiff_adapter)
-
-
-        if len(adapter_fusion_names) > 0:
-            if len(undiff_adapters) > 0:
-                self.model.train_adapter_and_fusion(undiff_adapters, adapter_fusion_names, unfreeze_adapters=True)
-            else:
-                self.model.train_adapter_fusion(adapter_fusion_names, unfreeze_adapters=True)
-            # for name, param in self.model.named_parameters():
-            #     if ',' not in name and param.requires_grad:
-            #         print('>>>', name, param.data.size())
-            # exit(0)
-        else:
-            self.model.train_adapter(undiff_adapters)
-
-        self.update_optimizer_params_groups()
-
-        if torch.cuda.is_available():
-            self.model = self.model.to(torch.device('cuda'))
+            print('>>> UPDATE', layer_fusion_name)
 
     def _differentiate_operate(self):
         self.exist_adapter_cell_grads = {}
