@@ -457,7 +457,7 @@ class AdapterDiffTrainer(Trainer):
 
     def _copy_adapter_fusion_runtime(self, new_adapter_fusion_name, adapter_fusion_name):
         save_path = os.path.join(self.adapter_cache_path, adapter_fusion_name)
-        assert not os.path.exists(save_path)
+        assert os.path.exists(save_path)
         # if not os.path.exists(save_path):
         #     os.mkdir(save_path)
         # self.model.save_adapter_fusion(save_path, adapter_fusion_name)
