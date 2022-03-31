@@ -366,7 +366,10 @@ class AdapterDiffTrainer(Trainer):
         add_decay_params = [p for n, p in self.model.named_parameters() if n in decay_parameters and p.requires_grad and n not in self.candidate_params]
         add_not_decay_params = [p for n, p in self.model.named_parameters() if n not in decay_parameters and p.requires_grad and n not in self.candidate_params]
 
-        
+        for n, p in self.model.named_parameters():
+            if p.requires_grad and n not in self.candidate_params:
+                self.candidate_params.append(n)
+
         optimizer_grouped_parameters = [
             {
                 "params": add_decay_params,
