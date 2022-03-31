@@ -126,6 +126,7 @@ class AdapterLayerBaseMixin(ABC):
         if unfreeze_adapters:
             for adapter_name in adapter_setup.flatten():
                 if adapter_name in self.adapters and (f'-{target_task}-' in adapter_name or adapter_name.startswith(f'{target_task}-')):
+                    # if adapter_name in self.adapters:
                     for param in self.adapters[adapter_name].parameters():
                         param.requires_grad = True
 

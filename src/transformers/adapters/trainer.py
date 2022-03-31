@@ -366,6 +366,9 @@ class AdapterDiffTrainer(Trainer):
         add_decay_params = [p for n, p in self.model.named_parameters() if n in decay_parameters and p.requires_grad and n not in self.candidate_params]
         add_not_decay_params = [p for n, p in self.model.named_parameters() if n not in decay_parameters and p.requires_grad and n not in self.candidate_params]
 
+        # add_decay_params = [p for n, p in self.model.named_parameters() if n in decay_parameters]
+        # add_not_decay_params = [p for n, p in self.model.named_parameters() if n not in decay_parameters]
+
         for n, p in self.model.named_parameters():
             if p.requires_grad and n not in self.candidate_params:
                 self.candidate_params.append(n)
@@ -479,13 +482,22 @@ class AdapterDiffTrainer(Trainer):
 
     def _extract_adapter_grads(self, task_name):
         # record all the adapter gradients on held-out evaluation data
+        # print('#'*100)
+        # print('>>> TARGET TASK',task_name)
         for name, param in self.model.named_parameters():
-            if 'adapter' in name and f'{task_name}-' in name and ',' not in name and param.requires_grad:
+            # if 'fusion' in name and param.requires_grad:
+            #     print('@@@FUSION', name)
+            #     if param.grad is not None:
+            #         print('### HERE ###')
+            #         exit(0)
+                    
+            if 'adapter' in name and (f'.{task_name}-' in name or f'-{task_name}-' in name) and ',' not in name and param.requires_grad:
                 layer = name.split('.')[6].split('-')[-1]
                 if layer not in self.exist_adapter_cell_grads:
                     self.exist_adapter_cell_grads[layer] = {}
                 if task_name not in self.exist_adapter_cell_grads[layer]:
                     self.exist_adapter_cell_grads[layer][task_name] = []
+
                 self.exist_adapter_cell_grads[layer][task_name].append(param.grad.clone().detach().view(1, -1))
 
     def _switch_model_task_mode(self, target_task):
@@ -520,19 +532,13 @@ class AdapterDiffTrainer(Trainer):
 
             if len(adapter_fusion_names) > 0:
                 self.model.train_adapter_and_fusion(undiff_adapters, adapter_fusion_names, unfreeze_adapters=True, target_task=target_task)
-                # print('#'*100)
-                # print('>>> TARGET TASK',target_task)
-                # for n, p in self.model.named_parameters():
-                #     if 'adapter' in n and 'fusion' not in n and p.requires_grad:
-                #         print('>>>', n, p.data.size())
-                # exit(0)
             else:
                 self.model.train_adapter(undiff_adapters)
 
-        self.update_optimizer_params_groups()            
-    
         if torch.cuda.is_available():
             self.model = self.model.to(torch.device('cuda'))
+
+        self.update_optimizer_params_groups()            
 
     def _find_differentiatable_cell(self):
         # find all the differentiatable cells according to the
@@ -546,6 +552,8 @@ class AdapterDiffTrainer(Trainer):
             assert shared_task_len > 1
 
             task_grads = torch.stack([g.view(-1,) for g in task_grad_mapping.values()])
+
+            # print('TAG', task_grads)
 
             dot_prod = torch.mm(task_grads, task_grads.t())
             norm = torch.norm(task_grads, p=2, dim=1).unsqueeze(0)
@@ -574,6 +582,7 @@ class AdapterDiffTrainer(Trainer):
                     continue
                 else:
                     tasks, interference_degrees = _calculate_interference_degree(task_grad_mapping)
+                    # print('@@@', interference_degrees)
                     max_interference_degree = torch.max(interference_degrees)
                     task_len = len(tasks)
                     if max_interference_degree > self.args.max_interference_degree:
@@ -674,7 +683,6 @@ class AdapterDiffTrainer(Trainer):
             for task in split_group[1]:
                 self.laryerwise_candidate_adapter[layer][task] = adapter_group2
         
-
         for adapter_name in differentiated_cells.keys():
             layer = adapter_name.split('-')[-1]
             layer_fusion_active = self.laryerwise_fusion_adapters[layer][0]
@@ -688,8 +696,7 @@ class AdapterDiffTrainer(Trainer):
                 self._copy_adapter_fusion_runtime(layer_fusion_name, self.laryerwise_fusion_adapters[layer][1])
             
             self.laryerwise_fusion_adapters[layer][1] = layer_fusion_name
-            print('>>> UPDATE', layer_fusion_name)
-
+        
     def _differentiate_operate(self):
         self.exist_adapter_cell_grads = {}
 
@@ -712,9 +719,12 @@ class AdapterDiffTrainer(Trainer):
                 loss = self.compute_loss(self.model, heldout_data)
                 loss.backward()
             
+            # print('>>> LOSS', loss)
             self._extract_adapter_grads(current_task)
         
         diff_cells = self._find_differentiatable_cell()
+        # print(diff_cells)
+
         if not self.train_adapter_fusion:
             self._update_differentiated_model(diff_cells)
         else:
