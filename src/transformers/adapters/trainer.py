@@ -686,8 +686,7 @@ class AdapterDiffTrainer(Trainer):
             for task in split_group[1]:
                 self.laryerwise_candidate_adapter[layer][task] = adapter_group2
         
-        for adapter_name in differentiated_cells.keys():
-            layer = adapter_name.split('-')[-1]
+        for layer in processed_fusion_layer:
             layer_fusion_active = self.laryerwise_fusion_adapters[layer][0]
 
             layer_adapters = list(set(list(self.laryerwise_candidate_adapter[layer].values())))
