@@ -196,9 +196,13 @@ class ModelAdaptersMixin(PushAdapterToHubMixin, ABC):
         if adapter_setup:
             for adapter_name in adapter_setup.flatten():
                 if adapter_name not in self.config.adapters.adapters:
-                    raise ValueError(
-                        f"No adapter with name '{adapter_name}' found. Please make sure that all specified adapters are correctly loaded."
-                    )
+                    if ',' in adapter_name:
+                        self.delete_adapter_fusion(adapter_name)
+                        print('>>> DELETE', adapter_name)
+                    else:
+                        raise ValueError(
+                            f"No adapter with name '{adapter_name}' found. Please make sure that all specified adapters are correctly loaded."
+                        )
 
         self.config.adapters.active_setup = adapter_setup
         self.config.adapters.skip_layers = skip_layers

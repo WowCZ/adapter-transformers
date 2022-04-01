@@ -128,6 +128,10 @@ def parse_composition(adapter_composition, level=0, model_type=None) -> AdapterC
         adapter_composition: The adapter setup to be parsed.
         level (int, optional): If set to none, disables validation. Defaults to 0.
     """
+    # print('#'*100)
+    # print('>>> LEVEL', level)
+    # print(adapter_composition)
+
     if not adapter_composition:
         return None
     elif isinstance(adapter_composition, AdapterCompositionBlock):

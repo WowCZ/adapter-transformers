@@ -192,13 +192,10 @@ class T5ModelAdaptersMixin(ModelAdaptersMixin):
         self.train()
         self.freeze_model(True)
 
-        total_adapters = adapter_setup
-        for adapter_fusion in adapter_fusion_setup:
-            total_adapters.extend(adapter_fusion)
-        self.set_active_adapters(total_adapters)
-        self.set_active_adapters(adapter_fusion_setup)
+        total_adapters = adapter_fusion_setup
 
         if len(adapter_setup) > 0:
+            total_adapters.extend(adapter_setup)
             adapter_setup = parse_composition(adapter_setup)
             if hasattr(self, "encoder"):
                 self.encoder.enable_adapters(adapter_setup, True, False)
@@ -210,8 +207,9 @@ class T5ModelAdaptersMixin(ModelAdaptersMixin):
         if hasattr(self, "encoder"):
             self.encoder.enable_target_adapters(adapter_fusion_setup, unfreeze_adapters, True, target_task)
         self.decoder.enable_target_adapters(adapter_fusion_setup, unfreeze_adapters, True, target_task)
+
         # use the adapters to be trained by default in every forward pass
-        # self.set_active_adapters(adapter_fusion_setup)
+        self.set_active_adapters(total_adapters)
 
     def _add_adapter(self, adapter_name):
         if hasattr(self, "encoder"):
