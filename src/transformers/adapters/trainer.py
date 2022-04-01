@@ -663,6 +663,8 @@ class AdapterDiffTrainer(Trainer):
     def _update_differentiated_fusion_model(self, differentiated_cells):
         # add new differentiated cells in the model and load 
         # the corresponding params in the optimizer
+
+        processed_fusion_layer = []
         for adapter_name, split_group in differentiated_cells.items():
             layer = adapter_name.split('-')[-1]
             adapter_group1 = '-'.join(split_group[0]) + f'-{layer}'
@@ -671,8 +673,9 @@ class AdapterDiffTrainer(Trainer):
             layer_fusion_active = self.laryerwise_fusion_adapters[layer][0]
 
             self._deactivate_adapter_runtime(adapter_name)
-            if layer_fusion_active:
+            if layer_fusion_active and layer not in processed_fusion_layer:
                 self._deactivate_adapter_fusion_runtime(self.laryerwise_fusion_adapters[layer][1])
+                processed_fusion_layer.append(layer)
             
             self._copy_adapter_runtime(adapter_group1, adapter_name)
             self._copy_adapter_runtime(adapter_group2, adapter_name)
