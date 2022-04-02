@@ -673,8 +673,10 @@ class AdapterDiffTrainer(Trainer):
             layer_fusion_active = self.laryerwise_fusion_adapters[layer][0]
 
             self._deactivate_adapter_runtime(adapter_name)
-            if layer_fusion_active and layer not in processed_fusion_layer:
+            if layer_fusion_active:
                 self._deactivate_adapter_fusion_runtime(self.laryerwise_fusion_adapters[layer][1])
+            
+            if layer not in processed_fusion_layer:
                 processed_fusion_layer.append(layer)
             
             self._copy_adapter_runtime(adapter_group1, adapter_name)
@@ -1233,14 +1235,16 @@ class AdapterDiffTrainer(Trainer):
         else:
             activate_adapter_fusions = []
             for layer in self.laryerwise_candidate_adapter.keys():
-                layer_activate_adapters = []
-                for target_task in self.laryerwise_candidate_adapter[layer].keys():
-                    layer_activate_adapters.append(self.laryerwise_candidate_adapter[layer][target_task])
-                if len(set(layer_activate_adapters)) == 1:
+                layer_activate_adapters = list(set(list(self.laryerwise_candidate_adapter[layer].values())))
+
+                if len(layer_activate_adapters) == 1:
                     adapter = layer_activate_adapters[0]
                     self.model.save_adapter(os.path.join(output_dir, adapter), adapter)
                 else:
+                    assert self.laryerwise_fusion_adapters[layer][0]
+
                     adapter_fusion = self.laryerwise_fusion_adapters[layer][1]
+                    # print('>>> ADAPTER FUSION', adapter_fusion)
                     activate_adapter_fusions.append(adapter_fusion)
                     self.model.save_adapter_fusion(os.path.join(output_dir, adapter_fusion), adapter_fusion)
                     for adapter in adapter_fusion.split(','):
