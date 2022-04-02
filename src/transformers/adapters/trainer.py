@@ -673,9 +673,9 @@ class AdapterDiffTrainer(Trainer):
             layer_fusion_active = self.laryerwise_fusion_adapters[layer][0]
 
             self._deactivate_adapter_runtime(adapter_name)
-            if layer_fusion_active:
+            if layer_fusion_active and layer not in processed_fusion_layer:
                 self._deactivate_adapter_fusion_runtime(self.laryerwise_fusion_adapters[layer][1])
-            
+
             if layer not in processed_fusion_layer:
                 processed_fusion_layer.append(layer)
             
