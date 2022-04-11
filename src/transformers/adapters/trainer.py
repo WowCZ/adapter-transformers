@@ -469,7 +469,6 @@ class AdapterDiffTrainer(Trainer):
         if not os.path.exists(save_path):
             os.mkdir(save_path)
         
-        print('###', save_path)
         self.model.load_adapter(save_path, load_as=adapter_name, set_active=True)
 
     def _copy_adapter_fusion_runtime(self, new_adapter_fusion_name, adapter_fusion_name):
@@ -529,7 +528,6 @@ class AdapterDiffTrainer(Trainer):
                         self._deactivate_adapter_runtime(adapter_name)
                     target_adapter = self.laryerwise_candidate_adapter[layer][target_task]
                     adapter_names.append(target_adapter)
-                    print('###', target_adapter)
                     self._activate_adapter_runtime(target_adapter)
                     self.current_active_adapters[layer] = target_adapter
             
