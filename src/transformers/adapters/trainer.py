@@ -252,6 +252,7 @@ class AdapterDiffTrainer(Trainer):
         heldout_eval_dataset: Optional[Dataset] = None,
         diff_tasks: Optional[str] = None,
         adapter_fusion: Optional[bool] = None,
+        diff_structure_init: Optional[str] = None,
         hwu_loss: Optional[bool] = None,
         adapter_cache_path: Optional[str] = None,
         tokenizer: Optional[PreTrainedTokenizerBase] = None,
@@ -311,6 +312,17 @@ class AdapterDiffTrainer(Trainer):
             self.current_active_adapters[f'L{str(i)}'] = f'{diff_tasks}-L{str(i)}'
         self.diff_task_names = task_names
         self.diff_operation = True
+
+        if diff_structure_init is not None:
+            init_layerwise_adapters = json.load(open(f'{diff_structure_init}/adapter_structure.json', 'r'))
+            init_diff_structure = dict()
+            for layer, task_adapters in init_layerwise_adapters.items():
+                adapter_set = list(set(list(task_adapters.values())))
+                adapter_group = [n.split('-')[:-1] for n in adapter_set]
+                init_adapter_name = f'{diff_tasks}-{layer}'
+                init_diff_structure[init_adapter_name] = adapter_group
+            
+            self._init_given_diff_structure(init_diff_structure)
 
         # train adapter fusion with adapter differentiation
         if self.train_adapter_fusion:
@@ -456,6 +468,8 @@ class AdapterDiffTrainer(Trainer):
         save_path = os.path.join(self.adapter_cache_path, adapter_name)
         if not os.path.exists(save_path):
             os.mkdir(save_path)
+        
+        print('###', save_path)
         self.model.load_adapter(save_path, load_as=adapter_name, set_active=True)
 
     def _copy_adapter_fusion_runtime(self, new_adapter_fusion_name, adapter_fusion_name):
@@ -515,6 +529,7 @@ class AdapterDiffTrainer(Trainer):
                         self._deactivate_adapter_runtime(adapter_name)
                     target_adapter = self.laryerwise_candidate_adapter[layer][target_task]
                     adapter_names.append(target_adapter)
+                    print('###', target_adapter)
                     self._activate_adapter_runtime(target_adapter)
                     self.current_active_adapters[layer] = target_adapter
             
@@ -638,6 +653,41 @@ class AdapterDiffTrainer(Trainer):
 
                         differentiated_cell_mapping[adapter_name] = [group1, group2]
         return differentiated_cell_mapping
+
+    def _init_given_diff_structure(self, differentiated_cells):
+
+        if self.train_adapter_fusion:
+            processed_fusion_layer = []
+        for adapter_name, split_group in differentiated_cells.items():
+            layer = adapter_name.split('-')[-1]
+
+            diff_adapter_groups = []
+            for adapter_group in split_group:
+                diff_adapter = '-'.join(adapter_group) + f'-{layer}'
+                diff_adapter_groups.append(diff_adapter)
+
+                for task in adapter_group:
+                    self.laryerwise_candidate_adapter[layer][task] = diff_adapter
+
+            self._deactivate_adapter_runtime(adapter_name)
+
+            if self.train_adapter_fusion and layer not in processed_fusion_layer:
+                processed_fusion_layer.append(layer)
+            
+            for diff_group in diff_adapter_groups:
+                self._copy_adapter_runtime(diff_group, adapter_name)
+
+            if not self.train_adapter_fusion:
+                self.current_active_adapters[layer] = ''
+        
+        if self.train_adapter_fusion:
+            for layer in processed_fusion_layer:
+                layer_adapters = list(set(list(self.laryerwise_candidate_adapter[layer].values())))
+                layer_fusion_name = ','.join(layer_adapters)
+                self._create_adapter_fusion_runtime(layer_fusion_name)
+
+                self.laryerwise_fusion_adapters[layer][0] = True
+                self.laryerwise_fusion_adapters[layer][1] = layer_fusion_name
 
     def _update_differentiated_model(self, differentiated_cells):
         # add new differentiated cells in the model and load 
