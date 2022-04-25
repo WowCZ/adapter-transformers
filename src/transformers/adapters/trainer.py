@@ -37,6 +37,13 @@ if is_sagemaker_mp_enabled():
     import smdistributed.modelparallel.torch as smp
 
 
+def calculate_cosine_similarity(task_grads):
+    dot_prod = torch.mm(task_grads, task_grads.t())
+    norm = torch.norm(task_grads, p=2, dim=1).unsqueeze(0)
+    cos = dot_prod.div(torch.mm(norm.t(), norm))
+    return cos
+
+
 class AdapterTrainer(Trainer):
     def __init__(
         self,
@@ -249,7 +256,7 @@ class AdapterDiffTrainer(Trainer):
         data_collator: Optional[DataCollator] = None,
         train_dataset: Optional[Dataset] = None,
         eval_dataset: Optional[Dataset] = None,
-        heldout_eval_dataset: Optional[Dataset] = None,
+        heldout_eval_dataset: Optional[List[Dataset]] = None,
         diff_tasks: Optional[str] = None,
         adapter_fusion: Optional[bool] = None,
         diff_structure_init: Optional[str] = None,
@@ -493,25 +500,42 @@ class AdapterDiffTrainer(Trainer):
             os.mkdir(save_path)
         self.model.save_adapter(save_path, target_adapter)
 
-    def _extract_adapter_grads(self, task_name):
+    def _extract_adapter_grads(self, heldout_eval_datasets):
         # record all the adapter gradients on held-out evaluation data
-        # print('#'*100)
-        # print('>>> TARGET TASK',task_name)
-        for name, param in self.model.named_parameters():
-            # if 'fusion' in name and param.requires_grad:
-            #     print('@@@FUSION', name)
-            #     if param.grad is not None:
-            #         print('### HERE ###')
-            #         exit(0)
-                    
-            if 'adapter' in name and (f'.{task_name}-' in name or f'-{task_name}-' in name) and ',' not in name and param.requires_grad:
-                layer = name.split('.')[6].split('-')[-1]
-                if layer not in self.exist_adapter_cell_grads:
-                    self.exist_adapter_cell_grads[layer] = {}
-                if task_name not in self.exist_adapter_cell_grads[layer]:
-                    self.exist_adapter_cell_grads[layer][task_name] = []
+        heldout_evl_nums = len(heldout_eval_datasets)
+        exist_adapter_cell_grads = [dict() for _ in range(heldout_evl_nums)]
 
-                self.exist_adapter_cell_grads[layer][task_name].append(param.grad.clone().detach().view(1, -1))
+        heldout_dataloaders = [self.get_eval_dataloader(h) for h in heldout_eval_datasets]
+
+        for current_task in self.diff_task_names:
+            self._switch_model_task_mode(current_task)
+            for hi, heldout_dataloader in enumerate(heldout_dataloaders):
+                self.optimizer.zero_grad()
+                for heldout_data in heldout_dataloader:
+                    task_name = heldout_data['tasks'][0]
+                    if task_name != current_task:
+                        continue
+
+                    heldout_data = {
+                        'input_ids': heldout_data['input_ids'].cuda(),
+                        'attention_mask': heldout_data['attention_mask'].cuda(),
+                        'labels': heldout_data['labels'].cuda(),
+                    }
+                    # Calculate the gradient of the given heldout evaluation data
+                    loss = self.compute_loss(self.model, heldout_data)
+                    loss.backward()
+
+                for name, param in self.model.named_parameters():
+                    if 'adapter' in name and (f'.{current_task}-' in name or f'-{current_task}-' in name) and ',' not in name and param.requires_grad:
+                        layer = name.split('.')[6].split('-')[-1]
+                        if layer not in exist_adapter_cell_grads[hi]:
+                            exist_adapter_cell_grads[hi][layer] = {}
+                        if current_task not in exist_adapter_cell_grads[hi][layer]:
+                            exist_adapter_cell_grads[hi][layer][current_task] = []
+
+                        exist_adapter_cell_grads[hi][layer][current_task].append(param.grad.clone().detach().view(1, -1))
+        
+        return exist_adapter_cell_grads
 
     def _switch_model_task_mode(self, target_task):
         # Switch the model on the target task mode
@@ -553,9 +577,8 @@ class AdapterDiffTrainer(Trainer):
 
         self.update_optimizer_params_groups()            
 
-    def _find_differentiatable_cell(self):
+    def _find_differentiatable_cell(self, exist_adapter_cell_grads):
         # find all the differentiatable cells according to the
-        #  record 'self.exist_adapter_cell_grads'
         # MAIN algorithem in the paper
         # output: {'original_cell': List(differentiated cells)}
         # update global active cells
@@ -565,12 +588,8 @@ class AdapterDiffTrainer(Trainer):
             assert shared_task_len > 1
 
             task_grads = torch.stack([g.view(-1,) for g in task_grad_mapping.values()])
+            cos = calculate_cosine_similarity(task_grads)
 
-            # print('TAG', task_grads)
-
-            dot_prod = torch.mm(task_grads, task_grads.t())
-            norm = torch.norm(task_grads, p=2, dim=1).unsqueeze(0)
-            cos = dot_prod.div(torch.mm(norm.t(), norm))
             interference_degree = []
             for i in range(shared_task_len-1):
                 # interference degree equals to nagetive cosine similarity
@@ -579,77 +598,117 @@ class AdapterDiffTrainer(Trainer):
 
             return list(task_grad_mapping.keys()), interference_degree
 
-        differentiated_cell_mapping = {}
-        for layer, task_grads in self.exist_adapter_cell_grads.items():
+        # To alleviate over-differentiaiton problem
+        laryerwise_adapter_grad_mappings = []
+        for exist_adapter_cell_grad in exist_adapter_cell_grads:
             laryerwise_adapter_grad_mapping = {}
-            for task_name, task_grad in task_grads.items():
-                adapter_name = self.laryerwise_candidate_adapter[layer][task_name]
-                if adapter_name not in laryerwise_adapter_grad_mapping:
-                    laryerwise_adapter_grad_mapping[adapter_name] = {}
+            for layer, task_grads in exist_adapter_cell_grad.items():
+                for task_name, task_grad in task_grads.items():
+                    adapter_name = self.laryerwise_candidate_adapter[layer][task_name]
+                    if adapter_name not in laryerwise_adapter_grad_mapping:
+                        laryerwise_adapter_grad_mapping[adapter_name] = {}
 
-                task_grad = torch.cat(task_grad, dim=1)
-                laryerwise_adapter_grad_mapping[adapter_name][task_name] = task_grad
+                    task_grad = torch.cat(task_grad, dim=1)
+                    laryerwise_adapter_grad_mapping[adapter_name][task_name] = task_grad
+            laryerwise_adapter_grad_mappings.append(laryerwise_adapter_grad_mapping)
 
-            for adapter_name, task_grad_mapping in laryerwise_adapter_grad_mapping.items():
-                if len(task_grad_mapping) == 1:
-                    continue
-                else:
-                    tasks, interference_degrees = _calculate_interference_degree(task_grad_mapping)
-                    # print('@@@', interference_degrees)
-                    max_interference_degree = torch.max(interference_degrees)
-                    task_len = len(tasks)
-                    if max_interference_degree > self.args.max_interference_degree:
-                        if layer not in differentiated_cell_mapping:
-                            differentiated_cell_mapping[adapter_name] = {}
-                        # start to differentiate
-                        flag = 0
-                        group1 = []
-                        group2 = []
-                        task_distance = {}
-                        for i in range(task_len-1):
-                            for j in range(i+1, task_len):
-                                if interference_degrees[flag] == max_interference_degree:
-                                    group1.append(i)
-                                    group2.append(j)
-                                
-                                task_distance[(i,j)] = interference_degrees[flag]
-                                flag += 1
+        if len(laryerwise_adapter_grad_mappings) == 1:
+            merge_laryerwise_adapter_grad_mapping = laryerwise_adapter_grad_mappings[0]
+        else:
+            assert len(laryerwise_adapter_grad_mappings) == 2
+            merge_laryerwise_adapter_grad_mapping = dict()
+            laryerwise_adapter_grad_mapping1 = laryerwise_adapter_grad_mappings[0]
+            laryerwise_adapter_grad_mapping2 = laryerwise_adapter_grad_mappings[1]
 
-                        for i in range(task_len):
-                            if i in group1 or i in group2:
-                                continue
-                            distance_to_g1 = []
-                            for j in group1:
-                                a = i
-                                b = j
-                                if i == j:
-                                    continue
-                                if i > j:
-                                    a,b = b,a
-                                distance_to_g1.append(task_distance[(a,b)])
+            differentiable_adapters = []
+            for adapter_name, task_grad_mapping in laryerwise_adapter_grad_mapping1.items():
+                if len(task_grad_mapping) > 1:
+                    diff_flag = True
+                    for task, grad in task_grad_mapping.items():
+                        aux_grad = laryerwise_adapter_grad_mapping2[adapter_name][task]
 
-                            distance_to_g2 = []
-                            for k in group2:
-                                a = i
-                                b = k
-                                if i == k:
-                                    continue
-                                if i > k:
-                                    a,b = b,a
-                                distance_to_g2.append(task_distance[(a,b)])
-                            
-                            distance_to_g1 = torch.stack(distance_to_g1).view(-1,)
-                            distance_to_g2 = torch.stack(distance_to_g2).view(-1,)
+                        grad_ = grad.view(1,-1)
+                        aux_grad_ = aux_grad.view(1,-1)
+                        dot_prod = torch.stack([grad_.view(-1,), aux_grad_.view(-1,)])
+                        dot_prod = dot_prod[0][0]
+                        if dot_prod < self.args.min_intra_simiarity:
+                            diff_flag = False
+                    
+                    if diff_flag:
+                        differentiable_adapters.append(adapter_name)
+                    
+                    # print('>>>', diff_flag)
 
-                            if torch.max(distance_to_g1) < torch.max(distance_to_g2):
+            for adapter_name in differentiable_adapters:
+                merge_laryerwise_adapter_grad_mapping[adapter_name] = dict()
+                
+                for task, grad in laryerwise_adapter_grad_mapping1[adapter_name].items():
+                    aux_grad = laryerwise_adapter_grad_mapping2[adapter_name][task]
+                    merge_laryerwise_adapter_grad_mapping[adapter_name][task] = grad + aux_grad
+
+        differentiated_cell_mapping = {}
+        for adapter_name, task_grad_mapping in merge_laryerwise_adapter_grad_mapping.items():
+            if len(task_grad_mapping) == 1:
+                continue
+            else:
+                tasks, interference_degrees = _calculate_interference_degree(task_grad_mapping)
+                # print('@@@', interference_degrees)
+                max_interference_degree = torch.max(interference_degrees)
+                task_len = len(tasks)
+                if max_interference_degree > self.args.max_interference_degree:
+                    if layer not in differentiated_cell_mapping:
+                        differentiated_cell_mapping[adapter_name] = {}
+                    # start to differentiate
+                    flag = 0
+                    group1 = []
+                    group2 = []
+                    task_distance = {}
+                    for i in range(task_len-1):
+                        for j in range(i+1, task_len):
+                            if interference_degrees[flag] == max_interference_degree:
                                 group1.append(i)
-                            else:
-                                group2.append(i)
+                                group2.append(j)
+                            
+                            task_distance[(i,j)] = interference_degrees[flag]
+                            flag += 1
 
-                        group1 = [tasks[t] for t in group1]
-                        group2 = [tasks[t] for t in group2]
+                    for i in range(task_len):
+                        if i in group1 or i in group2:
+                            continue
+                        distance_to_g1 = []
+                        for j in group1:
+                            a = i
+                            b = j
+                            if i == j:
+                                continue
+                            if i > j:
+                                a,b = b,a
+                            distance_to_g1.append(task_distance[(a,b)])
 
-                        differentiated_cell_mapping[adapter_name] = [group1, group2]
+                        distance_to_g2 = []
+                        for k in group2:
+                            a = i
+                            b = k
+                            if i == k:
+                                continue
+                            if i > k:
+                                a,b = b,a
+                            distance_to_g2.append(task_distance[(a,b)])
+                        
+                        distance_to_g1 = torch.stack(distance_to_g1).view(-1,)
+                        distance_to_g2 = torch.stack(distance_to_g2).view(-1,)
+
+                        if torch.max(distance_to_g1) < torch.max(distance_to_g2):
+                            group1.append(i)
+                        else:
+                            group2.append(i)
+
+                    group1 = [tasks[t] for t in group1]
+                    group2 = [tasks[t] for t in group2]
+
+                    differentiated_cell_mapping[adapter_name] = [group1, group2]
+        
+        # print('>>> differentiated_cell_mapping', differentiated_cell_mapping)
         return differentiated_cell_mapping
 
     def _init_given_diff_structure(self, differentiated_cells):
@@ -750,31 +809,8 @@ class AdapterDiffTrainer(Trainer):
             self.laryerwise_fusion_adapters[layer][1] = layer_fusion_name
         
     def _differentiate_operate(self):
-        self.exist_adapter_cell_grads = {}
-
-        self.heldout_dataloader = self.get_eval_dataloader(self.heldout_eval_dataset)
-
-        for current_task in self.diff_task_names:
-            self._switch_model_task_mode(current_task)
-            self.optimizer.zero_grad()
-            for heldout_data in self.heldout_dataloader:
-                task_name = heldout_data['tasks'][0]
-                if task_name != current_task:
-                    continue
-
-                heldout_data = {
-                    'input_ids': heldout_data['input_ids'].cuda(),
-                    'attention_mask': heldout_data['attention_mask'].cuda(),
-                    'labels': heldout_data['labels'].cuda(),
-                }
-                # Calculate the gradient of the given heldout evaluation data
-                loss = self.compute_loss(self.model, heldout_data)
-                loss.backward()
-            
-            # print('>>> LOSS', loss)
-            self._extract_adapter_grads(current_task)
-        
-        diff_cells = self._find_differentiatable_cell()
+        exist_adapter_cell_grads = self._extract_adapter_grads(self.heldout_eval_dataset)
+        diff_cells = self._find_differentiatable_cell(exist_adapter_cell_grads)
         # print(diff_cells)
 
         if not self.train_adapter_fusion:

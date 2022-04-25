@@ -76,6 +76,13 @@ class Seq2SeqTrainingArguments(TrainingArguments):
         },
     )
 
+    min_intra_simiarity: Optional[float] = field(
+        default=0,
+        metadata={
+            "help": "max interference degree"
+        },
+    )
+
     differentiate_start_step: Optional[int] = field(
         default=0,
         metadata={
