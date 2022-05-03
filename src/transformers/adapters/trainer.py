@@ -1,3 +1,4 @@
+from audioop import tomono
 import inspect
 import os
 import re
@@ -6,6 +7,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import datasets
 from sklearn.metrics import jaccard_score
+from toml import TomlPathlibEncoder
 import torch
 from packaging import version
 from torch import nn
@@ -27,6 +29,7 @@ from ..trainer_pt_utils import get_parameter_names
 from ..trainer_utils import EvalPrediction, ShardedDDPOption
 from ..training_args import TrainingArguments
 from ..trainer import *
+import math
 
 
 if is_fairscale_available():
@@ -352,6 +355,58 @@ class AdapterDiffTrainer(Trainer):
             self.huw_param_optim = torch.optim.Adam(self.huw_log_vars)
             self.huw_pairs = dict(zip(task_names, self.huw_log_vars))
 
+        self.entropy_validate = False
+        if self.args.max_entropy_threshold > 0:
+            self.entropy_validate = True
+
+    
+    def get_headout_eval_dataloader(self, eval_dataset: Optional[Dataset] = None) -> DataLoader:
+        """
+        Returns the evaluation :class:`~torch.utils.data.DataLoader`.
+
+        Subclass and override this method if you want to inject some custom behavior.
+
+        Args:
+            eval_dataset (:obj:`torch.utils.data.Dataset`, `optional`):
+                If provided, will override :obj:`self.eval_dataset`. If it is an :obj:`datasets.Dataset`, columns not
+                accepted by the ``model.forward()`` method are automatically removed. It must implement :obj:`__len__`.
+        """
+        if eval_dataset is None and self.eval_dataset is None:
+            raise ValueError("Trainer: evaluation requires an eval_dataset.")
+        eval_dataset = eval_dataset if eval_dataset is not None else self.eval_dataset
+
+        if is_datasets_available() and isinstance(eval_dataset, datasets.Dataset):
+            eval_dataset = self._remove_unused_columns(eval_dataset, description="evaluation")
+
+        if isinstance(eval_dataset, torch.utils.data.IterableDataset):
+            if self.args.world_size > 1:
+                eval_dataset = IterableDatasetShard(
+                    eval_dataset,
+                    batch_size=1,
+                    drop_last=self.args.dataloader_drop_last,
+                    num_processes=self.args.world_size,
+                    process_index=self.args.process_index,
+                )
+            return DataLoader(
+                eval_dataset,
+                batch_size=1,
+                collate_fn=self.data_collator,
+                num_workers=self.args.dataloader_num_workers,
+                pin_memory=self.args.dataloader_pin_memory,
+            )
+
+        eval_sampler = self._get_eval_sampler(eval_dataset)
+
+        return DataLoader(
+            eval_dataset,
+            sampler=eval_sampler,
+            batch_size=1,
+            collate_fn=self.data_collator,
+            drop_last=self.args.dataloader_drop_last,
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
+        )
+
     
     def compute_loss(self, model, inputs, return_outputs=False):
         if self.label_smoother is not None and "labels" in inputs:
@@ -505,17 +560,18 @@ class AdapterDiffTrainer(Trainer):
         heldout_evl_nums = len(heldout_eval_datasets)
         exist_adapter_cell_grads = [dict() for _ in range(heldout_evl_nums)]
 
-        heldout_dataloaders = [self.get_eval_dataloader(h) for h in heldout_eval_datasets]
+        heldout_dataloaders = [self.get_headout_eval_dataloader(h) for h in heldout_eval_datasets]
 
         for current_task in self.diff_task_names:
             self._switch_model_task_mode(current_task)
             for hi, heldout_dataloader in enumerate(heldout_dataloaders):
                 self.optimizer.zero_grad()
-                for heldout_data in heldout_dataloader:
+
+                for _, heldout_data in enumerate(heldout_dataloader):
                     task_name = heldout_data['tasks'][0]
                     if task_name != current_task:
                         continue
-
+                    
                     heldout_data = {
                         'input_ids': heldout_data['input_ids'].cuda(),
                         'attention_mask': heldout_data['attention_mask'].cuda(),
@@ -525,15 +581,41 @@ class AdapterDiffTrainer(Trainer):
                     loss = self.compute_loss(self.model, heldout_data)
                     loss.backward()
 
-                for name, param in self.model.named_parameters():
-                    if 'adapter' in name and (f'.{current_task}-' in name or f'-{current_task}-' in name) and ',' not in name and param.requires_grad:
-                        layer = name.split('.')[6].split('-')[-1]
-                        if layer not in exist_adapter_cell_grads[hi]:
-                            exist_adapter_cell_grads[hi][layer] = {}
-                        if current_task not in exist_adapter_cell_grads[hi][layer]:
-                            exist_adapter_cell_grads[hi][layer][current_task] = []
+                    if self.entropy_validate:
+                        tmp_adapter_cell_grads = dict()
+                        for name, param in self.model.named_parameters():
+                            if 'adapter' in name and (f'.{current_task}-' in name or f'-{current_task}-' in name) and ',' not in name and param.requires_grad:
+                                layer = name.split('.')[6].split('-')[-1]
+                                if layer not in tmp_adapter_cell_grads:
+                                    tmp_adapter_cell_grads[layer] = {}
+                                if current_task not in tmp_adapter_cell_grads[layer]:
+                                    tmp_adapter_cell_grads[layer][current_task] = []
 
-                        exist_adapter_cell_grads[hi][layer][current_task].append(param.grad.clone().detach().view(1, -1))
+                                tmp_adapter_cell_grads[layer][current_task].append(param.grad.clone().detach().view(1, -1))
+                        
+                        for layer, task_grads in tmp_adapter_cell_grads.items():
+                            for task, task_grad in task_grads.items():
+                                cat_grad = torch.cat(task_grad, dim=1)
+
+                                if layer not in exist_adapter_cell_grads[hi]:
+                                    exist_adapter_cell_grads[hi][layer] = {}
+                                if task not in exist_adapter_cell_grads[hi][layer]:
+                                    exist_adapter_cell_grads[hi][layer][task] = []
+
+                                exist_adapter_cell_grads[hi][layer][task].append(cat_grad)
+                        
+                        self.optimizer.zero_grad()
+
+                if not self.entropy_validate:
+                    for name, param in self.model.named_parameters():
+                        if 'adapter' in name and (f'.{current_task}-' in name or f'-{current_task}-' in name) and ',' not in name and param.requires_grad:
+                            layer = name.split('.')[6].split('-')[-1]
+                            if layer not in exist_adapter_cell_grads[hi]:
+                                exist_adapter_cell_grads[hi][layer] = {}
+                            if current_task not in exist_adapter_cell_grads[hi][layer]:
+                                exist_adapter_cell_grads[hi][layer][current_task] = []
+
+                            exist_adapter_cell_grads[hi][layer][current_task].append(param.grad.clone().detach().view(1, -1))
         
         return exist_adapter_cell_grads
 
@@ -599,52 +681,120 @@ class AdapterDiffTrainer(Trainer):
             return list(task_grad_mapping.keys()), interference_degree
 
         # To alleviate over-differentiaiton problem
-        laryerwise_adapter_grad_mappings = []
-        for exist_adapter_cell_grad in exist_adapter_cell_grads:
-            laryerwise_adapter_grad_mapping = {}
-            for layer, task_grads in exist_adapter_cell_grad.items():
-                for task_name, task_grad in task_grads.items():
-                    adapter_name = self.laryerwise_candidate_adapter[layer][task_name]
-                    if adapter_name not in laryerwise_adapter_grad_mapping:
-                        laryerwise_adapter_grad_mapping[adapter_name] = {}
+        if not self.entropy_validate:
+            laryerwise_adapter_grad_mappings = []
+            for exist_adapter_cell_grad in exist_adapter_cell_grads:
+                laryerwise_adapter_grad_mapping = {}
+                for layer, task_grads in exist_adapter_cell_grad.items():
+                    for task_name, task_grad in task_grads.items():
+                        adapter_name = self.laryerwise_candidate_adapter[layer][task_name]
+                        if adapter_name not in laryerwise_adapter_grad_mapping:
+                            laryerwise_adapter_grad_mapping[adapter_name] = {}
 
-                    task_grad = torch.cat(task_grad, dim=1)
-                    laryerwise_adapter_grad_mapping[adapter_name][task_name] = task_grad
-            laryerwise_adapter_grad_mappings.append(laryerwise_adapter_grad_mapping)
+                        task_grad = torch.cat(task_grad, dim=1)
+                        laryerwise_adapter_grad_mapping[adapter_name][task_name] = task_grad
+                laryerwise_adapter_grad_mappings.append(laryerwise_adapter_grad_mapping)
 
-        if len(laryerwise_adapter_grad_mappings) == 1:
-            merge_laryerwise_adapter_grad_mapping = laryerwise_adapter_grad_mappings[0]
+            if len(laryerwise_adapter_grad_mappings) == 1:
+                merge_laryerwise_adapter_grad_mapping = laryerwise_adapter_grad_mappings[0]
+            else:
+                assert len(laryerwise_adapter_grad_mappings) == 2
+                merge_laryerwise_adapter_grad_mapping = dict()
+                laryerwise_adapter_grad_mapping1 = laryerwise_adapter_grad_mappings[0]
+                laryerwise_adapter_grad_mapping2 = laryerwise_adapter_grad_mappings[1]
+
+                differentiable_adapters = []
+                for adapter_name, task_grad_mapping in laryerwise_adapter_grad_mapping1.items():
+                    if len(task_grad_mapping) > 1:
+                        diff_flag = True
+                        for task, grad in task_grad_mapping.items():
+                            aux_grad = laryerwise_adapter_grad_mapping2[adapter_name][task]
+
+                            grad_ = grad.view(1,-1)
+                            aux_grad_ = aux_grad.view(1,-1)
+                            dot_prod = calculate_cosine_similarity(torch.stack([grad_.view(-1,), aux_grad_.view(-1,)]))
+                            dot_prod = dot_prod[0][1]
+                            if dot_prod < self.args.min_intra_simiarity:
+                                diff_flag = False
+                                break
+                        
+                        if diff_flag:
+                            differentiable_adapters.append(adapter_name)
+
+                for adapter_name in differentiable_adapters:
+                    merge_laryerwise_adapter_grad_mapping[adapter_name] = dict()
+                    
+                    for task, grad in laryerwise_adapter_grad_mapping1[adapter_name].items():
+                        aux_grad = laryerwise_adapter_grad_mapping2[adapter_name][task]
+                        merge_laryerwise_adapter_grad_mapping[adapter_name][task] = grad + aux_grad
         else:
-            assert len(laryerwise_adapter_grad_mappings) == 2
             merge_laryerwise_adapter_grad_mapping = dict()
-            laryerwise_adapter_grad_mapping1 = laryerwise_adapter_grad_mappings[0]
-            laryerwise_adapter_grad_mapping2 = laryerwise_adapter_grad_mappings[1]
+            laryerwise_adapter_grad_mappings = []
+            for exist_adapter_cell_grad in exist_adapter_cell_grads:
+                laryerwise_adapter_grad_mapping = {}
+                for layer, task_grads in exist_adapter_cell_grad.items():
+                    for task_name, task_grad in task_grads.items():
+                        adapter_name = self.laryerwise_candidate_adapter[layer][task_name]
+                        if adapter_name not in laryerwise_adapter_grad_mapping:
+                            laryerwise_adapter_grad_mapping[adapter_name] = {}
+
+                        task_grad = torch.cat(task_grad, dim=0)
+                        laryerwise_adapter_grad_mapping[adapter_name][task_name] = task_grad
+                laryerwise_adapter_grad_mappings.append(laryerwise_adapter_grad_mapping)
+
+            if len(laryerwise_adapter_grad_mappings) == 1:
+                laryerwise_adapter_grad_mapping = laryerwise_adapter_grad_mappings[0]
+            else:
+                assert len(laryerwise_adapter_grad_mappings) == 2
+                laryerwise_adapter_grad_mapping1 = laryerwise_adapter_grad_mappings[0]
+                laryerwise_adapter_grad_mapping2 = laryerwise_adapter_grad_mappings[1]
+
+                for adapter_name, task_grad_mapping in laryerwise_adapter_grad_mapping1.items():
+                    if len(task_grad_mapping) > 1:
+                        diff_flag = True
+                        for task, grad in task_grad_mapping.items():
+                            aux_grad = laryerwise_adapter_grad_mapping2[adapter_name][task]
+                            laryerwise_adapter_grad_mapping1[adapter_name][task] = torch.cat([grad, aux_grad], dim=0)
+                laryerwise_adapter_grad_mapping = laryerwise_adapter_grad_mapping1
 
             differentiable_adapters = []
-            for adapter_name, task_grad_mapping in laryerwise_adapter_grad_mapping1.items():
-                if len(task_grad_mapping) > 1:
-                    diff_flag = True
-                    for task, grad in task_grad_mapping.items():
-                        aux_grad = laryerwise_adapter_grad_mapping2[adapter_name][task]
+            for adapter_name, task_grads in laryerwise_adapter_grad_mapping.items():
 
-                        grad_ = grad.view(1,-1)
-                        aux_grad_ = aux_grad.view(1,-1)
-                        dot_prod = torch.stack([grad_.view(-1,), aux_grad_.view(-1,)])
-                        dot_prod = dot_prod[0][0]
-                        if dot_prod < self.args.min_intra_simiarity:
-                            diff_flag = False
+                diff_flag = True
+                for task, grad in task_grads.items():
+                    ave_grad = torch.mean(grad, dim=0)
+                    hd_size = grad.size(0)
+
+                    positive_grad = 0
+                    for hd_i in range(hd_size):
+                        grad_ = grad[hd_i]
+                        cos = calculate_cosine_similarity(torch.stack([grad_.view(-1,), ave_grad.view(-1,)]))
+                        if cos[0][1] > math.cos(math.pi / 4):
+                            positive_grad += 1
+
+                    positive_prob = positive_grad / hd_size
+
+                    if positive_prob == 0 or positive_prob == 1:
+                        task_entropy = 0
+                    else:
+                        task_entropy = -(positive_prob * math.log(positive_prob, 2) + (1-positive_prob) * math.log(1-positive_prob, 2))
                     
-                    if diff_flag:
-                        differentiable_adapters.append(adapter_name)
-                    
-                    # print('>>>', diff_flag)
+                    # if task_entropy > self.args.max_entropy_threshold:
+                    #     diff_flag = False
+                    #     break
+
+                    if positive_prob < 0.8:
+                        diff_flag = False
+                        break
+            
+                if diff_flag:
+                    differentiable_adapters.append(adapter_name)
 
             for adapter_name in differentiable_adapters:
                 merge_laryerwise_adapter_grad_mapping[adapter_name] = dict()
                 
-                for task, grad in laryerwise_adapter_grad_mapping1[adapter_name].items():
-                    aux_grad = laryerwise_adapter_grad_mapping2[adapter_name][task]
-                    merge_laryerwise_adapter_grad_mapping[adapter_name][task] = grad + aux_grad
+                for task, grad in laryerwise_adapter_grad_mapping[adapter_name].items():
+                    merge_laryerwise_adapter_grad_mapping[adapter_name][task] = torch.mean(grad, dim=0)
 
         differentiated_cell_mapping = {}
         for adapter_name, task_grad_mapping in merge_laryerwise_adapter_grad_mapping.items():

@@ -77,7 +77,14 @@ class Seq2SeqTrainingArguments(TrainingArguments):
     )
 
     min_intra_simiarity: Optional[float] = field(
-        default=0,
+        default=-1,
+        metadata={
+            "help": "max interference degree"
+        },
+    )
+
+    max_entropy_threshold: Optional[float] = field(
+        default=-1,
         metadata={
             "help": "max interference degree"
         },
