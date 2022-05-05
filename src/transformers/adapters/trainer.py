@@ -751,7 +751,6 @@ class AdapterDiffTrainer(Trainer):
 
                 for adapter_name, task_grad_mapping in laryerwise_adapter_grad_mapping1.items():
                     if len(task_grad_mapping) > 1:
-                        diff_flag = True
                         for task, grad in task_grad_mapping.items():
                             aux_grad = laryerwise_adapter_grad_mapping2[adapter_name][task]
                             laryerwise_adapter_grad_mapping1[adapter_name][task] = torch.cat([grad, aux_grad], dim=0)
@@ -769,7 +768,7 @@ class AdapterDiffTrainer(Trainer):
                     for hd_i in range(hd_size):
                         grad_ = grad[hd_i]
                         cos = calculate_cosine_similarity(torch.stack([grad_.view(-1,), ave_grad.view(-1,)]))
-                        if cos[0][1] > math.cos(math.pi / 4):
+                        if cos[0][1] > math.cos(math.pi / self.args.max_entropy_threshold):
                             positive_grad += 1
 
                     positive_prob = positive_grad / hd_size
