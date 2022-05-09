@@ -714,7 +714,7 @@ class AdapterDiffTrainer(Trainer):
                             aux_grad_ = aux_grad.view(1,-1)
                             dot_prod = calculate_cosine_similarity(torch.stack([grad_.view(-1,), aux_grad_.view(-1,)]))
                             dot_prod = dot_prod[0][1]
-                            if dot_prod < self.args.min_intra_simiarity:
+                            if dot_prod < math.cos(math.pi / self.args.min_intra_simiarity):
                                 diff_flag = False
                                 break
                         
@@ -778,13 +778,13 @@ class AdapterDiffTrainer(Trainer):
                     else:
                         task_entropy = -(positive_prob * math.log(positive_prob, 2) + (1-positive_prob) * math.log(1-positive_prob, 2))
                     
-                    # if task_entropy > self.args.max_entropy_threshold:
-                    #     diff_flag = False
-                    #     break
-
-                    if positive_prob < 0.8:
+                    if task_entropy > -(0.8 * math.log(0.8, 2) + 0.2 * math.log(0.2, 2)) or positive_prob < 0.5:
                         diff_flag = False
                         break
+
+                    # if positive_prob < 0.8:
+                    #     diff_flag = False
+                    #     break
             
                 if diff_flag:
                     differentiable_adapters.append(adapter_name)
